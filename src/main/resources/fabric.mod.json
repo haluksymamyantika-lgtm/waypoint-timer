@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "wptimer",
+  "version": "${version}",
+  "name": "Waypoint Timer",
+  "description": "Waypointy z odliczaniem czasu.",
+  "authors": [],
+  "environment": "client",
+  "entrypoints": {
+    "client": ["pl.wptimer.WaypointTimerMod"]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21.4",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
