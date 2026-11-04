@@ -11,6 +11,7 @@ import org.lwjgl.glfw.GLFW;
 public class WaypointTimerMod implements ClientModInitializer {
     public static KeyBinding addKey;
     public static KeyBinding listKey;
+    private static int tickCount = 0;
 
     @Override
     public void onInitializeClient() {
@@ -28,6 +29,7 @@ public class WaypointTimerMod implements ClientModInitializer {
             while (listKey.wasPressed()) {
                 if (client.currentScreen == null && client.player != null) client.setScreen(new ListScreen());
             }
+            if (++tickCount % 5 == 0) GeneratorScanner.scan(client);
             WaypointStore.tick(client);
         });
 

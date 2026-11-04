@@ -7,6 +7,11 @@ import net.minecraft.client.render.Camera;
 import net.minecraft.client.render.LightmapTextureManager;
 import net.minecraft.client.render.VertexConsumerProvider;
 import net.minecraft.client.util.math.MatrixStack;
+import net.minecraft.text.MutableText;
+import net.minecraft.text.Style;
+import net.minecraft.text.Text;
+import net.minecraft.text.TextColor;
+import net.minecraft.util.Formatting;
 import net.minecraft.util.math.Vec3d;
 import org.joml.Matrix4f;
 
@@ -29,9 +34,13 @@ public class WaypointRenderer {
             if (!key.equals(w.world)) continue;
 
             double dx = w.x + 0.5 - cp.x;
-            double dy = w.y + 1.5 - cp.y;
+            double dy = w.y + 1.0 - cp.y;
             double dz = w.z + 0.5 - cp.z;
             double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+
+            // gdy widac oryginalny hologram generatora, nie dubluj napisu
+            if (WaypointStore.hideLive && w.generator && w.isLive(now) && dist < 48) continue;
+
             double k = dist > 96 ? 96 / dist : 1.0;
             double d = dist * k;
             float s = 0.025f * WaypointStore.scale * (float) Math.max(1.0, d / 8.0);
@@ -42,9 +51,26 @@ public class WaypointRenderer {
             ms.scale(-s, -s, s);
             Matrix4f mat = ms.peek().getPositionMatrix();
 
-            drawCentered(tr, w.name, -12, 0xFFFFFFFF, mat, consumers);
-            drawCentered(tr, w.timerText(now), 0, w.timerColor(now), mat, consumers);
-            drawCentered(tr, (int) dist + " m", 12, 0xFFAAAAAA, mat, consumers);
+            // linia 1: nazwa (kolor i pogrubienie z generatora)
+            Text nameT = Text.literal(w.name)
+                    .setStyle(Style.EMPTY.withColor(TextColor.fromRgb(w.color)).withBold(w.bold));
+
+            // linia 2: zegar + "Regeneracja za" + czas
+            MutableText timerT = Text.literal("⌚ ").formatted(Formatting.WHITE);
+            if (w.ready(now)) {
+                timerT.append(Text.literal("Gotowy").formatted(Formatting.GREEN, Formatting.BOLD));
+            } else if (w.endAt <= 0) {
+                timerT.append(Text.literal("Brak czasu").formatted(Formatting.GRAY));
+            } else {
+                timerT.append(Text.literal("Regeneracja za ").formatted(Formatting.WHITE, Formatting.BOLD));
+                timerT.append(Text.literal(w.timerText(now)).formatted(Formatting.YELLOW, Formatting.BOLD));
+            }
+
+            Text distT = Text.literal((int) dist + " m").formatted(Formatting.GRAY);
+
+            drawCentered(tr, nameT, -12, mat, consumers);
+            drawCentered(tr, timerT, 0, mat, consumers);
+            drawCentered(tr, distT, 12, mat, consumers);
 
             ms.pop();
         }
@@ -52,10 +78,10 @@ public class WaypointRenderer {
         if (consumers instanceof VertexConsumerProvider.Immediate imm) imm.draw();
     }
 
-    private static void drawCentered(TextRenderer tr, String text, float y, int color,
+    private static void drawCentered(TextRenderer tr, Text text, float y,
                                      Matrix4f mat, VertexConsumerProvider consumers) {
         float x = -tr.getWidth(text) / 2f;
-        tr.draw(text, x, y, color, false, mat, consumers,
+        tr.draw(text, x, y, 0xFFFFFFFF, false, mat, consumers,
                 TextRenderer.TextLayerType.SEE_THROUGH, 0x66000000, LightmapTextureManager.MAX_LIGHT_COORDINATE);
     }
 }

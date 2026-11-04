@@ -16,12 +16,16 @@ import java.util.List;
 public class WaypointStore {
     public static List<Waypoint> list = new ArrayList<>();
     public static float scale = 1.0f;
+    public static boolean autoDetect = true;
+    public static boolean hideLive = true;
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     private static class Data {
         List<Waypoint> waypoints = new ArrayList<>();
         float scale = 1.0f;
+        boolean autoDetect = true;
+        boolean hideLive = true;
     }
 
     private static Path path() {
@@ -36,6 +40,8 @@ public class WaypointStore {
                 if (d != null) {
                     if (d.waypoints != null) list = d.waypoints;
                     if (d.scale > 0) scale = d.scale;
+                    autoDetect = d.autoDetect;
+                    hideLive = d.hideLive;
                 }
             }
         } catch (Exception e) {
@@ -48,6 +54,8 @@ public class WaypointStore {
             Data d = new Data();
             d.waypoints = list;
             d.scale = scale;
+            d.autoDetect = autoDetect;
+            d.hideLive = hideLive;
             Files.writeString(path(), GSON.toJson(d));
         } catch (Exception e) {
             e.printStackTrace();
@@ -81,7 +89,7 @@ public class WaypointStore {
                     mc.getSoundManager().play(PositionedSoundInstance.master(SoundEvents.BLOCK_NOTE_BLOCK_PLING, 1.0f));
                     mc.player.sendMessage(Text.literal("§a" + w.name + " – GOTOWE"), true);
                 }
-                if (w.repeat) {
+                if (w.repeat && w.durationSec > 0) {
                     long d = w.durationSec * 1000L;
                     w.endAt += d * ((now - w.endAt) / d + 1);
                     w.notified = false;

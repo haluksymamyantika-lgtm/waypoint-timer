@@ -3,13 +3,14 @@ package pl.wptimer;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
+import net.minecraft.client.gui.widget.SliderWidget;
 import net.minecraft.text.Text;
 
 import java.util.ArrayList;
 import java.util.List;
 
 public class ListScreen extends Screen {
-    private static final int PER = 6;
+    private static final int PER = 5;
     private static final int TOP = 30;
     private int page = 0;
     private List<Waypoint> items = new ArrayList<>();
@@ -17,6 +18,38 @@ public class ListScreen extends Screen {
 
     public ListScreen() {
         super(Text.literal("Waypointy"));
+    }
+
+    private static class ScaleSlider extends SliderWidget {
+        ScaleSlider(int x, int y, int w) {
+            super(x, y, w, 20, Text.empty(),
+                    Math.max(0.0, Math.min(1.0, (WaypointStore.scale - 0.3) / 5.7)));
+            updateMessage();
+        }
+
+        @Override
+        protected void updateMessage() {
+            setMessage(Text.literal("Rozmiar napisów: " + String.format("%.1f", 0.3 + this.value * 5.7)));
+        }
+
+        @Override
+        protected void applyValue() {
+            WaypointStore.scale = (float) (0.3 + this.value * 5.7);
+        }
+
+        @Override
+        public void onRelease(double mouseX, double mouseY) {
+            super.onRelease(mouseX, mouseY);
+            WaypointStore.save();
+        }
+    }
+
+    private static Text autoText() {
+        return Text.literal("Auto-wykrywanie: " + (WaypointStore.autoDetect ? "TAK" : "NIE"));
+    }
+
+    private static Text hideText() {
+        return Text.literal("Ukryj przy oryginale: " + (WaypointStore.hideLive ? "TAK" : "NIE"));
     }
 
     @Override
@@ -46,6 +79,8 @@ public class ListScreen extends Screen {
 
         int y1 = TOP + PER * 24 + 6;
         int y2 = y1 + 24;
+        int y3 = y2 + 24;
+
         addDrawableChild(ButtonWidget.builder(Text.literal("<"), b -> {
             if (page > 0) page--;
             clearAndInit();
@@ -59,14 +94,18 @@ public class ListScreen extends Screen {
         addDrawableChild(ButtonWidget.builder(Text.literal("Zamknij"),
                 b -> close()).dimensions(left + 192, y1, 108, 20).build());
 
-        addDrawableChild(ButtonWidget.builder(Text.literal("Napis -"), b -> {
-            WaypointStore.scale = Math.max(0.3f, WaypointStore.scale - 0.1f);
+        addDrawableChild(new ScaleSlider(left, y2, 300));
+
+        addDrawableChild(ButtonWidget.builder(autoText(), b -> {
+            WaypointStore.autoDetect = !WaypointStore.autoDetect;
             WaypointStore.save();
-        }).dimensions(left, y2, 90, 20).build());
-        addDrawableChild(ButtonWidget.builder(Text.literal("Napis +"), b -> {
-            WaypointStore.scale = Math.min(4.0f, WaypointStore.scale + 0.1f);
+            b.setMessage(autoText());
+        }).dimensions(left, y3, 148, 20).build());
+        addDrawableChild(ButtonWidget.builder(hideText(), b -> {
+            WaypointStore.hideLive = !WaypointStore.hideLive;
             WaypointStore.save();
-        }).dimensions(left + 94, y2, 90, 20).build());
+            b.setMessage(hideText());
+        }).dimensions(left + 152, y3, 148, 20).build());
     }
 
     @Override
@@ -87,11 +126,11 @@ public class ListScreen extends Screen {
             if (idx >= items.size()) break;
             Waypoint w = items.get(idx);
             int y = TOP + i * 24 + 6;
-            ctx.drawTextWithShadow(textRenderer, textRenderer.trimToWidth(w.name, 92), left, y, 0xFFFFFFFF);
-            ctx.drawTextWithShadow(textRenderer, w.timerText(now), left + 100, y, w.timerColor(now));
+            ctx.drawTextWithShadow(textRenderer, textRenderer.trimToWidth(w.name, 100), left, y, 0xFF000000 | w.color);
+            ctx.drawTextWithShadow(textRenderer, textRenderer.trimToWidth(w.timerText(now), 60), left + 104, y, w.timerColor(now));
         }
 
-        int y2 = TOP + PER * 24 + 6 + 24;
-        ctx.drawTextWithShadow(textRenderer, (page + 1) + "/" + pages, left + 200, y2 + 6, 0xFFAAAAAA);
+        int y1 = TOP + PER * 24 + 6;
+        ctx.drawTextWithShadow(textRenderer, (page + 1) + "/" + pages, left + 120, y1 - 9, 0xFFAAAAAA);
     }
 }
