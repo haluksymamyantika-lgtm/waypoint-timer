@@ -104,6 +104,8 @@ public class GeneratorScanner {
             changed = true;
             if (prev == 1 && ns == 2) {
                 // bloki zniknely -> zaczela sie regeneracja (jesli hologram nie podal czasu)
+                w.autoStartAt = 0;
+                w.autoCounting = false;
                 if (!w.isLive(now) && w.durationSec > 0) {
                     w.endAt = now + w.durationSec * 1000L;
                     w.notified = false;
@@ -114,6 +116,8 @@ public class GeneratorScanner {
                     w.endAt = now;
                     w.notified = false;
                 }
+                w.autoCounting = false;
+                w.autoStartAt = now + WaypointStore.startDelaySec * 1000L;
             }
         }
         if (changed) WaypointStore.save();
@@ -232,6 +236,8 @@ public class GeneratorScanner {
             if (timer != null) {
                 long ms = parseMs(timer.text);
                 if (ms >= 0) {
+                    w.autoCounting = false;
+                    w.autoStartAt = 0;
                     long newEnd = now + ms;
                     if (w.endAt <= 0 || Math.abs(newEnd - w.endAt) > 1200) w.endAt = newEnd;
                     if (ms > 0) w.notified = false;
@@ -243,9 +249,13 @@ public class GeneratorScanner {
                 if (w.endAt <= 0) {
                     w.endAt = now;
                     w.notified = true;
+                } else if (w.autoCounting) {
+                    // odliczanie wystartowal mod (po regeneracji) - nie przerywaj go
+                    if (w.endAt <= now) w.autoCounting = false;
                 } else if (wasLive && w.endAt > now) {
                     w.endAt = now;
                     w.notified = false;
+                    w.autoStartAt = now + WaypointStore.startDelaySec * 1000L;
                 }
             }
         }

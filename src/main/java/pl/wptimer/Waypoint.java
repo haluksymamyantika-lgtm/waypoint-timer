@@ -17,6 +17,8 @@ public class Waypoint {
     public boolean notified = true;
     public int color = 0xFFAA00;         // kolor nazwy z hologramu
     public boolean bold = true;
+    public long autoStartAt = 0;         // kiedy wystartowac auto-odliczanie po regeneracji (0 = nie)
+    public boolean autoCounting = false; // true = obecne odliczanie wystartowal mod, nie hologram
     public int state = 0;                // 0 = nieznany, 1 = sa bloki generatora (czerwony), 2 = brak blokow (bialy)
     public List<String> types = new ArrayList<>();
 

@@ -14,8 +14,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Napisy rysowane na ekranie (HUD) w miejscu, gdzie w swiecie jest obszar.
- * Dzieki temu sa czytelne z dowolnej odleglosci i przez sciany.
+ * Karty z czasem rysowane na ekranie w miejscu obszaru:
+ * widac je z kazdej odleglosci i przez sciany.
  */
 public class WaypointHud {
     private static class Item {
@@ -48,12 +48,14 @@ public class WaypointHud {
 
         for (Item it : items) {
             Waypoint w = it.w;
+            boolean ready = w.isReady(now);
 
             Text nameT = Text.literal(w.name)
                     .setStyle(Style.EMPTY.withColor(TextColor.fromRgb(w.color)).withBold(w.bold));
+            Text distT = Text.literal((int) it.dist + " m").formatted(Formatting.GRAY);
 
             MutableText timerT = Text.literal("⌚ ").formatted(Formatting.WHITE);
-            if (w.isReady(now)) {
+            if (ready) {
                 timerT.append(Text.literal("Gotowy").formatted(Formatting.GREEN, Formatting.BOLD));
             } else if (w.endAt <= 0) {
                 timerT.append(Text.literal("Brak czasu").formatted(Formatting.GRAY));
@@ -62,21 +64,43 @@ public class WaypointHud {
                 timerT.append(Text.literal(w.timerText(now)).formatted(Formatting.YELLOW, Formatting.BOLD));
             }
 
-            Text distT = Text.literal((int) it.dist + " m").formatted(Formatting.GRAY);
-
-            int wn = tr.getWidth(nameT), wt = tr.getWidth(timerT), wd = tr.getWidth(distT);
-            int half = Math.max(wn, Math.max(wt, wd)) / 2 + 3;
+            int wn = tr.getWidth(nameT), wd = tr.getWidth(distT), wt = tr.getWidth(timerT);
+            int inner = Math.max(wn + 10 + wd, wt);
+            int half = inner / 2 + 5;
+            int h = 36;
+            int top = -h - 3;
+            int bottom = -3;
+            int accent = 0xFF000000 | w.statusColor();
 
             MatrixStack m = dc.getMatrices();
             m.push();
             m.translate(it.sx, it.sy, 0f);
             m.scale(s, s, 1f);
 
-            dc.fill(-half, -34, half, 0, 0x77000000);
-            dc.fill(-half, -34, half, -32, 0xFF000000 | w.statusColor());   // czerwony / bialy / szary pasek
-            dc.drawTextWithShadow(tr, nameT, -wn / 2, -30, 0xFFFFFFFF);
-            dc.drawTextWithShadow(tr, timerT, -wt / 2, -20, 0xFFFFFFFF);
-            dc.drawTextWithShadow(tr, distT, -wd / 2, -10, 0xFFFFFFFF);
+            // karta
+            dc.fill(-half - 1, top - 1, half + 1, bottom + 1, 0x66000000);
+            dc.fill(-half, top, half, bottom, 0xEE15151C);
+            dc.fill(-half, top, half, top + 2, accent);
+            // "strzalka" wskazujaca miejsce
+            dc.fill(-3, bottom, 3, bottom + 1, 0xEE15151C);
+            dc.fill(-2, bottom + 1, 2, bottom + 2, 0xEE15151C);
+            dc.fill(-1, bottom + 2, 1, bottom + 3, accent);
+
+            // tresc
+            dc.drawTextWithShadow(tr, nameT, -half + 5, top + 5, 0xFFFFFFFF);
+            dc.drawTextWithShadow(tr, distT, half - 5 - wd, top + 5, 0xFFFFFFFF);
+            dc.drawTextWithShadow(tr, timerT, -half + 5, top + 17, 0xFFFFFFFF);
+
+            // pasek postepu
+            int bx1 = -half + 5, bx2 = half - 5, by = bottom - 5;
+            dc.fill(bx1, by, bx2, by + 2, 0x44FFFFFF);
+            if (ready) {
+                dc.fill(bx1, by, bx2, by + 2, 0xFF55FF55);
+            } else if (w.endAt > now && w.durationSec > 0) {
+                double frac = Math.min(1.0, (w.endAt - now) / (w.durationSec * 1000.0));
+                int fx = bx1 + (int) ((bx2 - bx1) * frac);
+                dc.fill(bx1, by, fx, by + 2, 0xFFFFFF55);
+            }
 
             m.pop();
         }

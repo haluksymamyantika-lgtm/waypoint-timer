@@ -19,6 +19,8 @@ public class WaypointStore {
     public static float scale = 1.0f;
     public static boolean hideLive = true;
     public static boolean showBoxes = true;
+    public static boolean autoStart = true;
+    public static int startDelaySec = 5;
 
     // pierwszy zaznaczony rog (jeszcze nie utworzony obszar)
     public static BlockPos pending = null;
@@ -31,6 +33,8 @@ public class WaypointStore {
         float scale = 1.0f;
         boolean hideLive = true;
         boolean showBoxes = true;
+        boolean autoStart = true;
+        int startDelaySec = 5;
     }
 
     private static Path path() {
@@ -47,6 +51,8 @@ public class WaypointStore {
                     if (d.scale > 0) scale = d.scale;
                     hideLive = d.hideLive;
                     showBoxes = d.showBoxes;
+                    autoStart = d.autoStart;
+                    startDelaySec = Math.max(0, Math.min(60, d.startDelaySec));
                 }
             }
         } catch (Exception e) {
@@ -61,6 +67,8 @@ public class WaypointStore {
             d.scale = scale;
             d.hideLive = hideLive;
             d.showBoxes = showBoxes;
+            d.autoStart = autoStart;
+            d.startDelaySec = startDelaySec;
             Files.writeString(path(), GSON.toJson(d));
         } catch (Exception e) {
             e.printStackTrace();
@@ -86,7 +94,20 @@ public class WaypointStore {
         long now = System.currentTimeMillis();
         boolean changed = false;
         for (Waypoint w : list) {
-            if (!key.equals(w.world) || w.endAt <= 0) continue;
+            if (!key.equals(w.world)) continue;
+
+            // po regeneracji generatora: po kilku sekundach mod sam zaczyna odliczanie jak hologram
+            if (w.autoStartAt > 0 && now >= w.autoStartAt) {
+                w.autoStartAt = 0;
+                if (autoStart && w.durationSec > 0 && w.state != 2) {
+                    w.endAt = now + w.durationSec * 1000L;
+                    w.notified = false;
+                    w.autoCounting = true;
+                }
+                changed = true;
+            }
+
+            if (w.endAt <= 0) continue;
             if (now >= w.endAt && !w.notified) {
                 w.notified = true;
                 changed = true;
