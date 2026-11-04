@@ -105,22 +105,12 @@ public class WaypointStore {
         String key = currentKey(mc);
         long now = System.currentTimeMillis();
         boolean changed = false;
+
         for (Waypoint w : list) {
             if (!key.equals(w.world)) continue;
 
-            // po regeneracji generatora: po kilku sekundach mod sam zaczyna odliczanie jak hologram
-            if (w.autoStartAt > 0 && now >= w.autoStartAt) {
-                w.autoStartAt = 0;
-                if (autoStart && w.durationSec > 0 && w.state != 2) {
-                    w.endAt = now + w.durationSec * 1000L;
-                    w.notified = false;
-                    w.autoCounting = true;
-                }
-                changed = true;
-            }
-
-            if (w.endAt <= 0) continue;
-            if (now >= w.endAt && !w.notified) {
+            // 1) odliczanie dobieglo konca -> powiadomienie
+            if (w.endAt > 0 && now >= w.endAt && !w.notified) {
                 w.notified = true;
                 changed = true;
                 if (now - w.endAt < 5000) {
@@ -133,6 +123,29 @@ public class WaypointStore {
                     long d = w.durationSec * 1000L;
                     w.endAt += d * ((now - w.endAt) / d + 1);
                     w.notified = false;
+                }
+            }
+
+            // 2) generator jest zregenerowany (takze gdy jestes daleko i nic nie widzisz)
+            //    -> po opoznieniu mod sam zaczyna kolejne odliczanie
+            if (autoStart && !w.repeat && w.durationSec > 0 && w.autoStartAt == 0 && w.isReady(now)) {
+                if (w.state == 2 && !w.isLive(now)) {
+                    w.state = 1;   // czas minal, wiec generator juz po regeneracji
+                }
+                if (w.state != 2) {
+                    w.autoStartAt = now + startDelaySec * 1000L;
+                    changed = true;
+                }
+            }
+
+            // 3) start odliczania
+            if (w.autoStartAt > 0 && now >= w.autoStartAt) {
+                w.autoStartAt = 0;
+                changed = true;
+                if (autoStart && w.durationSec > 0 && w.state != 2) {
+                    w.endAt = now + w.durationSec * 1000L;
+                    w.notified = false;
+                    w.autoCounting = true;
                 }
             }
         }
