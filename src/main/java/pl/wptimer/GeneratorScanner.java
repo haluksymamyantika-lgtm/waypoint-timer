@@ -1,29 +1,36 @@
 package pl.wptimer;
 
+import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.world.ClientWorld;
 import net.minecraft.entity.Entity;
+import net.minecraft.registry.Registries;
 import net.minecraft.text.Style;
 import net.minecraft.text.Text;
 import net.minecraft.text.TextColor;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.chunk.ChunkStatus;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Czyta hologramy generatorow (nazwa "Generator ..." + linia "Regeneracja za ...")
- * i synchronizuje z nich waypointy.
+ * 1) sprawdza czy w zaznaczonym obszarze sa bloki generatora (czerwony / bialy),
+ * 2) czyta hologram "Generator ..." + "Regeneracja za ..." lezacy w obszarze.
  */
 public class GeneratorScanner {
+    public static final int MAX_VOLUME = 200000;
+
     private static final Pattern DAYS = Pattern.compile("(\\d+)\\s*d\\b");
     private static final Pattern HOURS = Pattern.compile("(\\d+)\\s*(?:h|godz)\\b");
     private static final Pattern MINS = Pattern.compile("(\\d+)\\s*m(?:in)?\\b");
     private static final Pattern SECS = Pattern.compile("(\\d+)\\s*s\\b");
-
-    private static long lastSave = 0;
 
     private static class Line {
         final Vec3d pos;
@@ -36,6 +43,83 @@ public class GeneratorScanner {
             this.raw = raw;
         }
     }
+
+    // ---------------------------------------------------------------- bloki
+
+    /** Zapamietuje typy blokow, ktore teraz sa w obszarze (= bloki generatora). */
+    public static void recordTypes(MinecraftClient mc, Waypoint w) {
+        ClientWorld world = mc.world;
+        if (world == null) return;
+        Set<String> found = new TreeSet<>();
+        BlockPos.Mutable p = new BlockPos.Mutable();
+        for (int x = w.x1; x <= w.x2; x++) {
+            for (int z = w.z1; z <= w.z2; z++) {
+                if (world.getChunk(x >> 4, z >> 4, ChunkStatus.FULL, false) == null) continue;
+                for (int y = w.y1; y <= w.y2; y++) {
+                    BlockState st = world.getBlockState(p.set(x, y, z));
+                    if (st.isAir()) continue;
+                    found.add(Registries.BLOCK.getId(st.getBlock()).toString());
+                }
+            }
+        }
+        w.setTypes(new ArrayList<>(found));
+    }
+
+    /** 0 = nieznany (niezaladowane chunki), 1 = sa bloki, 2 = brak blokow. */
+    private static int checkState(ClientWorld world, Waypoint w) {
+        Set<String> ts = w.typeSet();
+        boolean unloaded = false;
+        BlockPos.Mutable p = new BlockPos.Mutable();
+        for (int x = w.x1; x <= w.x2; x++) {
+            for (int z = w.z1; z <= w.z2; z++) {
+                if (world.getChunk(x >> 4, z >> 4, ChunkStatus.FULL, false) == null) {
+                    unloaded = true;
+                    continue;
+                }
+                for (int y = w.y1; y <= w.y2; y++) {
+                    BlockState st = world.getBlockState(p.set(x, y, z));
+                    if (st.isAir()) continue;
+                    if (ts.isEmpty() || ts.contains(Registries.BLOCK.getId(st.getBlock()).toString())) return 1;
+                }
+            }
+        }
+        return unloaded ? 0 : 2;
+    }
+
+    public static void scanBlocks(MinecraftClient mc, int tick) {
+        if (mc.world == null || mc.player == null) return;
+        String key = WaypointStore.currentKey(mc);
+        long now = System.currentTimeMillis();
+        boolean changed = false;
+        int i = 0;
+        for (Waypoint w : WaypointStore.list) {
+            if (!key.equals(w.world)) continue;
+            i++;
+            if ((tick + i) % 20 != 0) continue;
+            if (w.volume() > MAX_VOLUME) continue;
+            int ns = checkState(mc.world, w);
+            if (ns == 0 || ns == w.state) continue;
+            int prev = w.state;
+            w.state = ns;
+            changed = true;
+            if (prev == 1 && ns == 2) {
+                // bloki zniknely -> zaczela sie regeneracja (jesli hologram nie podal czasu)
+                if (!w.isLive(now) && w.durationSec > 0) {
+                    w.endAt = now + w.durationSec * 1000L;
+                    w.notified = false;
+                }
+            } else if (prev == 2 && ns == 1) {
+                // bloki wrocily -> generator gotowy
+                if (w.endAt > now) {
+                    w.endAt = now;
+                    w.notified = false;
+                }
+            }
+        }
+        if (changed) WaypointStore.save();
+    }
+
+    // ------------------------------------------------------------ hologramy
 
     private static long parseMs(String text) {
         String t = text.toLowerCase(Locale.ROOT);
@@ -70,8 +154,19 @@ public class GeneratorScanner {
         return diff;
     }
 
-    public static void scan(MinecraftClient mc) {
+    private static double dist2(Vec3d p, double x, double y, double z) {
+        double dx = p.x - x, dy = p.y - y, dz = p.z - z;
+        return dx * dx + dy * dy + dz * dz;
+    }
+
+    public static void scanHolograms(MinecraftClient mc) {
         if (mc.world == null || mc.player == null) return;
+        String key = WaypointStore.currentKey(mc);
+        boolean any = false;
+        for (Waypoint w : WaypointStore.list) {
+            if (key.equals(w.world)) { any = true; break; }
+        }
+        if (!any) return;
 
         List<Line> names = new ArrayList<>();
         List<Line> timers = new ArrayList<>();
@@ -85,67 +180,67 @@ public class GeneratorScanner {
             if (low.contains("regeneracja")) timers.add(l);
             else if (low.contains("generator")) names.add(l);
         }
-        if (names.isEmpty()) return;
+        if (names.isEmpty() && timers.isEmpty()) return;
 
-        String key = WaypointStore.currentKey(mc);
         long now = System.currentTimeMillis();
         boolean changed = false;
 
-        for (Line n : names) {
-            Line best = null;
-            double bd = 1e9;
+        for (Waypoint w : WaypointStore.list) {
+            if (!key.equals(w.world)) continue;
+
+            // hologram "w obszarze" (z zapasem, bo wisi nad blokami)
+            double minX = w.x1 - 2, maxX = w.x2 + 3;
+            double minY = w.y1 - 2, maxY = w.y2 + 5;
+            double minZ = w.z1 - 2, maxZ = w.z2 + 3;
+            double cx = w.centerX(), cy = w.y2 + 1.5, cz = w.centerZ();
+
+            Line timer = null;
+            double bd = 1e18;
             for (Line t : timers) {
-                double dx = t.pos.x - n.pos.x, dz = t.pos.z - n.pos.z, dy = t.pos.y - n.pos.y;
-                if (Math.abs(dx) > 0.8 || Math.abs(dz) > 0.8 || Math.abs(dy) > 1.3) continue;
-                double dd = Math.abs(dy) + Math.hypot(dx, dz);
-                if (dd < bd) { bd = dd; best = t; }
+                Vec3d p = t.pos;
+                if (p.x < minX || p.x > maxX || p.y < minY || p.y > maxY || p.z < minZ || p.z > maxZ) continue;
+                double d = dist2(p, cx, cy, cz);
+                if (d < bd) { bd = d; timer = t; }
             }
 
-            int bx = (int) Math.floor(n.pos.x), by = (int) Math.floor(n.pos.y), bz = (int) Math.floor(n.pos.z);
-            Waypoint w = null;
-            for (Waypoint c : WaypointStore.list) {
-                if (c.generator && key.equals(c.world)
-                        && Math.abs(c.x - bx) <= 1 && Math.abs(c.z - bz) <= 1 && Math.abs(c.y - by) <= 3) {
-                    w = c;
-                    break;
+            Line name = null;
+            bd = 1e18;
+            for (Line n : names) {
+                Vec3d p = n.pos;
+                if (p.x < minX || p.x > maxX || p.y < minY || p.y > maxY || p.z < minZ || p.z > maxZ) continue;
+                double d;
+                if (timer != null) {
+                    double dx = p.x - timer.pos.x, dz = p.z - timer.pos.z, dy = p.y - timer.pos.y;
+                    if (Math.abs(dx) > 0.8 || Math.abs(dz) > 0.8 || Math.abs(dy) > 1.3) continue;
+                    d = dx * dx + dy * dy + dz * dz;
+                } else {
+                    d = dist2(p, cx, cy, cz);
                 }
+                if (d < bd) { bd = d; name = n; }
             }
 
-            boolean isNew = false;
-            if (w == null) {
-                if (!WaypointStore.autoDetect) continue;
-                w = new Waypoint();
-                w.generator = true;
-                w.world = key;
-                w.x = bx;
-                w.y = by;
-                w.z = bz;
-                w.durationSec = 0;
-                w.notified = true;
-                WaypointStore.list.add(w);
-                isNew = true;
-                changed = true;
-            }
+            if (name == null && timer == null) continue;
 
             boolean wasLive = w.isLive(now);
-            if (!n.text.equals(w.name)) { w.name = n.text; changed = true; }
-            if (applyStyle(n.raw, w)) changed = true;
             w.liveAt = now;
 
-            if (best != null) {
-                long ms = parseMs(best.text);
+            if (name != null) {
+                if (!w.nameLocked && !name.text.equals(w.name)) { w.name = name.text; changed = true; }
+                if (applyStyle(name.raw, w)) changed = true;
+            }
+
+            if (timer != null) {
+                long ms = parseMs(timer.text);
                 if (ms >= 0) {
                     long newEnd = now + ms;
-                    if (w.endAt <= 0 || Math.abs(newEnd - w.endAt) > 1200) {
-                        w.endAt = newEnd;
-                    }
+                    if (w.endAt <= 0 || Math.abs(newEnd - w.endAt) > 1200) w.endAt = newEnd;
                     if (ms > 0) w.notified = false;
                     int sec = (int) ((ms + 999) / 1000);
                     if (sec > w.durationSec) { w.durationSec = sec; changed = true; }
                 }
             } else {
-                // jest nazwa, ale nie ma linii "Regeneracja" -> generator gotowy
-                if (isNew || w.endAt <= 0) {
+                // jest nazwa generatora, ale nie ma linii "Regeneracja" -> gotowy
+                if (w.endAt <= 0) {
                     w.endAt = now;
                     w.notified = true;
                 } else if (wasLive && w.endAt > now) {
@@ -154,10 +249,6 @@ public class GeneratorScanner {
                 }
             }
         }
-
-        if (changed || now - lastSave > 20000) {
-            WaypointStore.save();
-            lastSave = now;
-        }
+        if (changed) WaypointStore.save();
     }
 }

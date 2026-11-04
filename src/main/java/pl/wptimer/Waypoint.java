@@ -1,31 +1,61 @@
 package pl.wptimer;
 
-public class Waypoint {
-    public String name = "Punkt";
-    public String world = "";
-    public int x, y, z;
-    public int durationSec = 60;
-    public boolean repeat = false;
-    public long endAt = 0;          // epoch ms, 0 = nie uruchomiony
-    public boolean notified = false;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
-    // generator wykryty automatycznie z hologramu
-    public boolean generator = false;
-    public int color = 0xFFAA00;
+/** Zaznaczony przez gracza obszar generatora + jego timer. */
+public class Waypoint {
+    public String name = "Generator";
+    public boolean nameLocked = false;   // true = nazwa wpisana recznie, hologram jej nie nadpisuje
+    public String world = "";
+    public int x1, y1, z1, x2, y2, z2;   // min/max wlacznie
+    public int durationSec = 0;          // najdluzszy zaobserwowany czas regeneracji
+    public boolean repeat = false;
+    public long endAt = 0;               // epoch ms, 0 = brak czasu
+    public boolean notified = true;
+    public int color = 0xFFAA00;         // kolor nazwy z hologramu
     public boolean bold = true;
+    public int state = 0;                // 0 = nieznany, 1 = sa bloki generatora (czerwony), 2 = brak blokow (bialy)
+    public List<String> types = new ArrayList<>();
+
     public transient long liveAt = 0;
+    private transient Set<String> typeSet;
+
+    public Set<String> typeSet() {
+        if (typeSet == null) typeSet = new HashSet<>(types);
+        return typeSet;
+    }
+
+    public void setTypes(List<String> t) {
+        types = t;
+        typeSet = null;
+    }
+
+    public long volume() {
+        return (long) (x2 - x1 + 1) * (y2 - y1 + 1) * (z2 - z1 + 1);
+    }
+
+    public double centerX() { return (x1 + x2 + 1) / 2.0; }
+    public double centerZ() { return (z1 + z2 + 1) / 2.0; }
+
+    public int statusColor() {
+        return state == 1 ? 0xFF2222 : (state == 2 ? 0xFFFFFF : 0xAAAAAA);
+    }
 
     public boolean isLive(long now) {
         return now - liveAt < 1500;
     }
 
     public void restart() {
+        if (durationSec <= 0) return;
         endAt = System.currentTimeMillis() + durationSec * 1000L;
         notified = false;
     }
 
-    public boolean ready(long now) {
-        return endAt > 0 && now >= endAt;
+    public boolean isReady(long now) {
+        return endAt > 0 ? now >= endAt : state == 1;
     }
 
     /** Format jak na generatorach: "7s", "2min, 33s", "1h, 2min". */
@@ -40,15 +70,15 @@ public class Waypoint {
     }
 
     public String timerText(long now) {
-        if (endAt <= 0) return "--";
+        if (endAt <= 0) return state == 1 ? "GOTOWE" : "--";
         long ms = endAt - now;
         if (ms <= 0) return "GOTOWE";
         return fmt((ms + 999) / 1000);
     }
 
     public int timerColor(long now) {
+        if (isReady(now)) return 0xFF55FF55;
         if (endAt <= 0) return 0xFFAAAAAA;
-        if (endAt - now <= 0) return 0xFF55FF55;
         return 0xFFFFFF55;
     }
 }

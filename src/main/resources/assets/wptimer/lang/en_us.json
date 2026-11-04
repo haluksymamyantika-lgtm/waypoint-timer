@@ -1,5 +1,5 @@
 {
-  "key.wptimer.add": "Dodaj waypoint",
-  "key.wptimer.list": "Lista waypointów",
+  "key.wptimer.select": "Zaznacz róg obszaru generatora",
+  "key.wptimer.list": "Lista obszarów / menu",
   "category.wptimer": "Waypoint Timer"
 }

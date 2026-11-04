@@ -7,6 +7,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.sound.PositionedSoundInstance;
 import net.minecraft.sound.SoundEvents;
 import net.minecraft.text.Text;
+import net.minecraft.util.math.BlockPos;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -16,20 +17,24 @@ import java.util.List;
 public class WaypointStore {
     public static List<Waypoint> list = new ArrayList<>();
     public static float scale = 1.0f;
-    public static boolean autoDetect = true;
     public static boolean hideLive = true;
+    public static boolean showBoxes = true;
+
+    // pierwszy zaznaczony rog (jeszcze nie utworzony obszar)
+    public static BlockPos pending = null;
+    public static String pendingWorld = "";
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     private static class Data {
         List<Waypoint> waypoints = new ArrayList<>();
         float scale = 1.0f;
-        boolean autoDetect = true;
         boolean hideLive = true;
+        boolean showBoxes = true;
     }
 
     private static Path path() {
-        return FabricLoader.getInstance().getConfigDir().resolve("waypoint-timer.json");
+        return FabricLoader.getInstance().getConfigDir().resolve("waypoint-timer-areas.json");
     }
 
     public static void load() {
@@ -40,8 +45,8 @@ public class WaypointStore {
                 if (d != null) {
                     if (d.waypoints != null) list = d.waypoints;
                     if (d.scale > 0) scale = d.scale;
-                    autoDetect = d.autoDetect;
                     hideLive = d.hideLive;
+                    showBoxes = d.showBoxes;
                 }
             }
         } catch (Exception e) {
@@ -54,8 +59,8 @@ public class WaypointStore {
             Data d = new Data();
             d.waypoints = list;
             d.scale = scale;
-            d.autoDetect = autoDetect;
             d.hideLive = hideLive;
+            d.showBoxes = showBoxes;
             Files.writeString(path(), GSON.toJson(d));
         } catch (Exception e) {
             e.printStackTrace();

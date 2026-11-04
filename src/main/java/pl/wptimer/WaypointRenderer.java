@@ -2,86 +2,111 @@ package pl.wptimer;
 
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.render.Camera;
-import net.minecraft.client.render.LightmapTextureManager;
+import net.minecraft.client.render.RenderLayer;
+import net.minecraft.client.render.VertexConsumer;
 import net.minecraft.client.render.VertexConsumerProvider;
 import net.minecraft.client.util.math.MatrixStack;
-import net.minecraft.text.MutableText;
-import net.minecraft.text.Style;
-import net.minecraft.text.Text;
-import net.minecraft.text.TextColor;
-import net.minecraft.util.Formatting;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import org.joml.Matrix4f;
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
+import org.joml.Vector4f;
 
 public class WaypointRenderer {
+
     public static void render(WorldRenderContext ctx) {
+        WaypointHud.begin();
+
         MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc.world == null || mc.player == null || mc.options.hudHidden) return;
+        if (mc.world == null || mc.player == null) return;
 
         MatrixStack ms = ctx.matrixStack();
         VertexConsumerProvider consumers = ctx.consumers();
+        Matrix4f proj = ctx.projectionMatrix();
         if (ms == null || consumers == null) return;
 
         Camera cam = ctx.camera();
         Vec3d cp = cam.getPos();
-        TextRenderer tr = mc.textRenderer;
         String key = WaypointStore.currentKey(mc);
         long now = System.currentTimeMillis();
+
+        MatrixStack.Entry entry = ms.peek();
+        VertexConsumer lines = consumers.getBuffer(RenderLayer.getLines());
+        Quaternionf inv = new Quaternionf(cam.getRotation()).conjugate();
+        int sw = mc.getWindow().getScaledWidth();
+        int sh = mc.getWindow().getScaledHeight();
 
         for (Waypoint w : WaypointStore.list) {
             if (!key.equals(w.world)) continue;
 
-            double dx = w.x + 0.5 - cp.x;
-            double dy = w.y + 1.0 - cp.y;
-            double dz = w.z + 0.5 - cp.z;
+            double ax = w.centerX(), ay = w.y2 + 1.5, az = w.centerZ();
+            double dx = ax - cp.x, dy = ay - cp.y, dz = az - cp.z;
             double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
 
-            // gdy widac oryginalny hologram generatora, nie dubluj napisu
-            if (WaypointStore.hideLive && w.generator && w.isLive(now) && dist < 48) continue;
-
-            double k = dist > 96 ? 96 / dist : 1.0;
-            double d = dist * k;
-            float s = 0.025f * WaypointStore.scale * (float) Math.max(1.0, d / 8.0);
-
-            ms.push();
-            ms.translate(dx * k, dy * k, dz * k);
-            ms.multiply(cam.getRotation());
-            ms.scale(-s, -s, s);
-            Matrix4f mat = ms.peek().getPositionMatrix();
-
-            // linia 1: nazwa (kolor i pogrubienie z generatora)
-            Text nameT = Text.literal(w.name)
-                    .setStyle(Style.EMPTY.withColor(TextColor.fromRgb(w.color)).withBold(w.bold));
-
-            // linia 2: zegar + "Regeneracja za" + czas
-            MutableText timerT = Text.literal("⌚ ").formatted(Formatting.WHITE);
-            if (w.ready(now)) {
-                timerT.append(Text.literal("Gotowy").formatted(Formatting.GREEN, Formatting.BOLD));
-            } else if (w.endAt <= 0) {
-                timerT.append(Text.literal("Brak czasu").formatted(Formatting.GRAY));
-            } else {
-                timerT.append(Text.literal("Regeneracja za ").formatted(Formatting.WHITE, Formatting.BOLD));
-                timerT.append(Text.literal(w.timerText(now)).formatted(Formatting.YELLOW, Formatting.BOLD));
+            // obrys obszaru: czerwony = sa bloki generatora, bialy = brak blokow
+            if (WaypointStore.showBoxes && dist < 400) {
+                box(lines, entry, cp, w.x1, w.y1, w.z1, w.x2, w.y2, w.z2, w.statusColor());
             }
 
-            Text distT = Text.literal((int) dist + " m").formatted(Formatting.GRAY);
+            // napis na ekranie (widac z daleka, przez sciany)
+            if (WaypointStore.hideLive && w.isLive(now) && dist < 12) continue;
+            if (proj == null) continue;
 
-            drawCentered(tr, nameT, -12, mat, consumers);
-            drawCentered(tr, timerT, 0, mat, consumers);
-            drawCentered(tr, distT, 12, mat, consumers);
+            Vector3f v = new Vector3f((float) dx, (float) dy, (float) dz);
+            inv.transform(v);
+            Vector4f c = new Vector4f(v.x, v.y, v.z, 1f);
+            proj.transform(c);
+            if (c.w <= 0.05f) continue;
+            float nx = c.x / c.w, ny = c.y / c.w;
+            if (Math.abs(nx) > 1.3f || Math.abs(ny) > 1.3f) continue;
+            float sx = (nx * 0.5f + 0.5f) * sw;
+            float sy = (0.5f - ny * 0.5f) * sh;
+            WaypointHud.add(w, sx, sy, dist);
+        }
 
-            ms.pop();
+        // pierwszy zaznaczony rog (zolty)
+        BlockPos pend = WaypointStore.pending;
+        if (pend != null && key.equals(WaypointStore.pendingWorld)) {
+            box(lines, entry, cp, pend.getX(), pend.getY(), pend.getZ(), pend.getX(), pend.getY(), pend.getZ(), 0xFFFF55);
         }
 
         if (consumers instanceof VertexConsumerProvider.Immediate imm) imm.draw();
     }
 
-    private static void drawCentered(TextRenderer tr, Text text, float y,
-                                     Matrix4f mat, VertexConsumerProvider consumers) {
-        float x = -tr.getWidth(text) / 2f;
-        tr.draw(text, x, y, 0xFFFFFFFF, false, mat, consumers,
-                TextRenderer.TextLayerType.SEE_THROUGH, 0x66000000, LightmapTextureManager.MAX_LIGHT_COORDINATE);
+    private static void box(VertexConsumer vc, MatrixStack.Entry e, Vec3d cp,
+                            int bx1, int by1, int bz1, int bx2, int by2, int bz2, int rgb) {
+        float x0 = (float) (bx1 - cp.x) - 0.01f;
+        float y0 = (float) (by1 - cp.y) - 0.01f;
+        float z0 = (float) (bz1 - cp.z) - 0.01f;
+        float x1 = (float) (bx2 + 1 - cp.x) + 0.01f;
+        float y1 = (float) (by2 + 1 - cp.y) + 0.01f;
+        float z1 = (float) (bz2 + 1 - cp.z) + 0.01f;
+        int r = (rgb >> 16) & 255, g = (rgb >> 8) & 255, bl = rgb & 255;
+
+        // krawedzie wzdluz X
+        line(vc, e, x0, y0, z0, x1, y0, z0, r, g, bl, 1, 0, 0);
+        line(vc, e, x0, y1, z0, x1, y1, z0, r, g, bl, 1, 0, 0);
+        line(vc, e, x0, y0, z1, x1, y0, z1, r, g, bl, 1, 0, 0);
+        line(vc, e, x0, y1, z1, x1, y1, z1, r, g, bl, 1, 0, 0);
+        // krawedzie wzdluz Y
+        line(vc, e, x0, y0, z0, x0, y1, z0, r, g, bl, 0, 1, 0);
+        line(vc, e, x1, y0, z0, x1, y1, z0, r, g, bl, 0, 1, 0);
+        line(vc, e, x0, y0, z1, x0, y1, z1, r, g, bl, 0, 1, 0);
+        line(vc, e, x1, y0, z1, x1, y1, z1, r, g, bl, 0, 1, 0);
+        // krawedzie wzdluz Z
+        line(vc, e, x0, y0, z0, x0, y0, z1, r, g, bl, 0, 0, 1);
+        line(vc, e, x1, y0, z0, x1, y0, z1, r, g, bl, 0, 0, 1);
+        line(vc, e, x0, y1, z0, x0, y1, z1, r, g, bl, 0, 0, 1);
+        line(vc, e, x1, y1, z0, x1, y1, z1, r, g, bl, 0, 0, 1);
+    }
+
+    private static void line(VertexConsumer vc, MatrixStack.Entry e,
+                             float ax, float ay, float az, float bx, float by, float bz,
+                             int r, int g, int b, float nx, float ny, float nz) {
+        Matrix4f m = e.getPositionMatrix();
+        vc.vertex(m, ax, ay, az).color(r, g, b, 255).normal(e, nx, ny, nz);
+        vc.vertex(m, bx, by, bz).color(r, g, b, 255).normal(e, nx, ny, nz);
     }
 }
