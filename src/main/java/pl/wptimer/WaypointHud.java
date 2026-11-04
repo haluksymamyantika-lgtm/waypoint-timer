@@ -64,10 +64,11 @@ public class WaypointHud {
                 timerT.append(Text.literal(w.timerText(now)).formatted(Formatting.YELLOW, Formatting.BOLD));
             }
 
+            boolean names = WaypointStore.showNames;
             int wn = tr.getWidth(nameT), wd = tr.getWidth(distT), wt = tr.getWidth(timerT);
-            int inner = Math.max(wn + 10 + wd, wt);
+            int inner = names ? Math.max(wn + 10 + wd, wt) : wt + 10 + wd;
             int half = inner / 2 + 5;
-            int h = 36;
+            int h = names ? 36 : 26;
             int top = -h - 3;
             int bottom = -3;
             int accent = 0xFF000000 | w.statusColor();
@@ -87,9 +88,13 @@ public class WaypointHud {
             dc.fill(-1, bottom + 2, 1, bottom + 3, accent);
 
             // tresc
-            dc.drawTextWithShadow(tr, nameT, -half + 5, top + 5, 0xFFFFFFFF);
             dc.drawTextWithShadow(tr, distT, half - 5 - wd, top + 5, 0xFFFFFFFF);
-            dc.drawTextWithShadow(tr, timerT, -half + 5, top + 17, 0xFFFFFFFF);
+            if (names) {
+                dc.drawTextWithShadow(tr, nameT, -half + 5, top + 5, 0xFFFFFFFF);
+                dc.drawTextWithShadow(tr, timerT, -half + 5, top + 17, 0xFFFFFFFF);
+            } else {
+                dc.drawTextWithShadow(tr, timerT, -half + 5, top + 5, 0xFFFFFFFF);
+            }
 
             // pasek postepu
             int bx1 = -half + 5, bx2 = half - 5, by = bottom - 5;

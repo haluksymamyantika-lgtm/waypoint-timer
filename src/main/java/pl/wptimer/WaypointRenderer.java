@@ -51,6 +51,7 @@ public class WaypointRenderer {
             }
 
             // napis na ekranie (widac z daleka, przez sciany)
+            if (!WaypointStore.showLabels) continue;
             if (WaypointStore.hideLive && w.isLive(now) && dist < 12) continue;
             if (proj == null) continue;
 

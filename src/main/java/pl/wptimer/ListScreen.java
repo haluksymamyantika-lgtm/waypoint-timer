@@ -176,7 +176,7 @@ public class ListScreen extends Screen {
                 w.state = 0;
                 WaypointStore.save();
                 if (client.player != null) {
-                    client.player.sendMessage(Text.literal("Zapisano typy bloków: " + w.types.size()), true);
+                    client.player.sendMessage(Text.literal("Zapisano znaczniki lewitującego bloku: " + w.types.size()), true);
                 }
             }));
         }
@@ -244,44 +244,38 @@ public class ListScreen extends Screen {
         clearAndInit();
     }
 
+    private void sw(int col, int row, BooleanSupplier get, Runnable flip) {
+        int colW = (cw - 4) / 2;
+        int x = cx + col * (colW + 4);
+        int y = cy + 68 + row * 30;
+        Btn b = new Btn(x + colW - 38, y + 6, 30, 14, () -> "", 4, flip);
+        b.state = get;
+        btns.add(b);
+    }
+
     private void buildSettings() {
         int rx = cx + cw - 8;
 
-        // 0: rozmiar napisow (od bardzo malych)
+        // rozmiar napisow (od bardzo malych)
         slides.add(new Slide(rx - 100, cy + 15, 100,
                 () -> Math.sqrt(Math.max(0.0, Math.min(1.0, (WaypointStore.scale - 0.05) / 5.95))),
                 v -> WaypointStore.scale = (float) (0.05 + 5.95 * v * v),
                 () -> String.format(Locale.US, "%.2f", WaypointStore.scale),
                 WaypointStore::save));
 
-        // 1-3: przelaczniki
-        Btn hide = new Btn(rx - 30, cy + 36 + 8, 30, 14, () -> "", 4, () -> {
-            WaypointStore.hideLive = !WaypointStore.hideLive;
-            WaypointStore.save();
-        });
-        hide.state = () -> WaypointStore.hideLive;
-        btns.add(hide);
-
-        Btn box = new Btn(rx - 30, cy + 72 + 8, 30, 14, () -> "", 4, () -> {
-            WaypointStore.showBoxes = !WaypointStore.showBoxes;
-            WaypointStore.save();
-        });
-        box.state = () -> WaypointStore.showBoxes;
-        btns.add(box);
-
-        Btn auto = new Btn(rx - 30, cy + 108 + 8, 30, 14, () -> "", 4, () -> {
-            WaypointStore.autoStart = !WaypointStore.autoStart;
-            WaypointStore.save();
-        });
-        auto.state = () -> WaypointStore.autoStart;
-        btns.add(auto);
-
-        // 4: opoznienie auto-startu
-        slides.add(new Slide(rx - 100, cy + 144 + 15, 100,
+        // opoznienie auto-startu
+        slides.add(new Slide(rx - 100, cy + 34 + 15, 100,
                 () -> WaypointStore.startDelaySec / 30.0,
                 v -> WaypointStore.startDelaySec = (int) Math.round(v * 30),
                 () -> WaypointStore.startDelaySec + " s",
                 WaypointStore::save));
+
+        sw(0, 0, () -> WaypointStore.showLabels, () -> { WaypointStore.showLabels = !WaypointStore.showLabels; WaypointStore.save(); });
+        sw(1, 0, () -> WaypointStore.showNames, () -> { WaypointStore.showNames = !WaypointStore.showNames; WaypointStore.save(); });
+        sw(0, 1, () -> WaypointStore.showBoxes, () -> { WaypointStore.showBoxes = !WaypointStore.showBoxes; WaypointStore.save(); });
+        sw(1, 1, () -> WaypointStore.hideLive, () -> { WaypointStore.hideLive = !WaypointStore.hideLive; WaypointStore.save(); });
+        sw(0, 2, () -> WaypointStore.autoStart, () -> { WaypointStore.autoStart = !WaypointStore.autoStart; WaypointStore.save(); });
+        sw(1, 2, () -> WaypointStore.beep, () -> { WaypointStore.beep = !WaypointStore.beep; WaypointStore.save(); });
     }
 
     private void buildKeys() {
@@ -446,17 +440,24 @@ public class ListScreen extends Screen {
             dc.drawTextWithShadow(textRenderer,
                     "Obszar: " + w.x1 + " " + w.y1 + " " + w.z1 + " - " + w.x2 + " " + w.y2 + " " + w.z2,
                     cx, cy + 134, C_MUTED);
-            dc.drawTextWithShadow(textRenderer, "Typów bloków generatora: " + w.types.size(), cx, cy + 146, C_MUTED);
+            dc.drawTextWithShadow(textRenderer, "Zapisanych znaczników lewitującego bloku: " + w.types.size(), cx, cy + 146, C_MUTED);
         }
     }
 
     private void drawSettings(DrawContext dc) {
-        String[] labels = {"Rozmiar napisów", "Ukryj napis przy oryginale", "Pokaż obrysy obszarów",
-                "Auto-start po regeneracji", "Opóźnienie startu"};
-        for (int i = 0; i < labels.length; i++) {
-            int y = cy + i * 36;
+        String[] sl = {"Rozmiar napisów", "Opóźnienie startu"};
+        for (int i = 0; i < sl.length; i++) {
+            int y = cy + i * 34;
             dc.fill(cx, y, cx + cw, y + 30, C_CARD);
-            dc.drawTextWithShadow(textRenderer, labels[i], cx + 10, y + 11, C_TEXT);
+            dc.drawTextWithShadow(textRenderer, sl[i], cx + 10, y + 11, C_TEXT);
+        }
+        String[] sws = {"Pokaż napisy", "Pokaż nazwy", "Pokaż obrysy", "Ukryj z bliska", "Auto-start", "Dźwięk (pik)"};
+        int colW = (cw - 4) / 2;
+        for (int i = 0; i < sws.length; i++) {
+            int x = cx + (i % 2) * (colW + 4);
+            int y = cy + 68 + (i / 2) * 30;
+            dc.fill(x, y, x + colW, y + 26, C_CARD);
+            dc.drawTextWithShadow(textRenderer, sws[i], x + 8, y + 9, C_TEXT);
         }
     }
 

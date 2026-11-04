@@ -20,6 +20,9 @@ public class WaypointStore {
     public static boolean hideLive = true;
     public static boolean showBoxes = true;
     public static boolean autoStart = true;
+    public static boolean showLabels = true;
+    public static boolean showNames = true;
+    public static boolean beep = true;
     public static int startDelaySec = 5;
 
     // pierwszy zaznaczony rog (jeszcze nie utworzony obszar)
@@ -34,6 +37,9 @@ public class WaypointStore {
         boolean hideLive = true;
         boolean showBoxes = true;
         boolean autoStart = true;
+        boolean showLabels = true;
+        boolean showNames = true;
+        boolean beep = true;
         int startDelaySec = 5;
     }
 
@@ -52,6 +58,9 @@ public class WaypointStore {
                     hideLive = d.hideLive;
                     showBoxes = d.showBoxes;
                     autoStart = d.autoStart;
+                    showLabels = d.showLabels;
+                    showNames = d.showNames;
+                    beep = d.beep;
                     startDelaySec = Math.max(0, Math.min(60, d.startDelaySec));
                 }
             }
@@ -68,6 +77,9 @@ public class WaypointStore {
             d.hideLive = hideLive;
             d.showBoxes = showBoxes;
             d.autoStart = autoStart;
+            d.showLabels = showLabels;
+            d.showNames = showNames;
+            d.beep = beep;
             d.startDelaySec = startDelaySec;
             Files.writeString(path(), GSON.toJson(d));
         } catch (Exception e) {
@@ -112,7 +124,9 @@ public class WaypointStore {
                 w.notified = true;
                 changed = true;
                 if (now - w.endAt < 5000) {
-                    mc.getSoundManager().play(PositionedSoundInstance.master(SoundEvents.BLOCK_NOTE_BLOCK_PLING, 1.0f));
+                    if (beep) {
+                        mc.getSoundManager().play(PositionedSoundInstance.master(SoundEvents.BLOCK_NOTE_BLOCK_PLING, 1.0f));
+                    }
                     mc.player.sendMessage(Text.literal("§a" + w.name + " – GOTOWE"), true);
                 }
                 if (w.repeat && w.durationSec > 0) {

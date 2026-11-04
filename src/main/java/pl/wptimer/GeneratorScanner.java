@@ -1,16 +1,17 @@
 package pl.wptimer;
 
-import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.world.ClientWorld;
 import net.minecraft.entity.Entity;
+import net.minecraft.entity.EntityType;
+import net.minecraft.entity.EquipmentSlot;
+import net.minecraft.entity.decoration.ArmorStandEntity;
+import net.minecraft.entity.ItemEntity;
+import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.text.Style;
 import net.minecraft.text.Text;
 import net.minecraft.text.TextColor;
-import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
-import net.minecraft.world.chunk.ChunkStatus;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -21,7 +22,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * 1) sprawdza czy w zaznaczonym obszarze sa bloki generatora (czerwony / bialy),
+ * 1) sprawdza czy nad generatorem jest lewitujacy blok-hologram (czerwony / bialy),
  * 2) czyta hologram "Generator ..." + "Regeneracja za ..." lezacy w obszarze.
  */
 public class GeneratorScanner {
@@ -44,66 +45,97 @@ public class GeneratorScanner {
         }
     }
 
-    // ---------------------------------------------------------------- bloki
+    // ------------------------------------------------- lewitujacy blok (hologram)
 
-    /** Zapamietuje typy blokow, ktore teraz sa w obszarze (= bloki generatora). */
+    /** Podpis lewitujacego "bloku" (encja), albo null jesli encja to nie jest lewitujacy blok/przedmiot. */
+    private static String floatSig(Entity e) {
+        if (e.getType() == EntityType.BLOCK_DISPLAY) return "block_display";
+        if (e.getType() == EntityType.ITEM_DISPLAY) return "item_display";
+        if (e instanceof ArmorStandEntity as) {
+            ItemStack st = as.getEquippedStack(EquipmentSlot.HEAD);
+            if (st.isEmpty()) st = as.getEquippedStack(EquipmentSlot.MAINHAND);
+            if (st.isEmpty()) return null;
+            return "armor_stand:" + Registries.ITEM.getId(st.getItem());
+        }
+        if (e instanceof ItemEntity ie && e.hasNoGravity()) {
+            return "item:" + Registries.ITEM.getId(ie.getStack().getItem());
+        }
+        return null;
+    }
+
+    private static boolean inRegion(Waypoint w, Vec3d p) {
+        return p.x >= w.x1 - 0.5 && p.x <= w.x2 + 1.5
+                && p.z >= w.z1 - 0.5 && p.z <= w.z2 + 1.5
+                && p.y >= w.y1 - 1 && p.y <= w.y2 + 4;
+    }
+
+    /** Zapamietuje, jaki lewitujacy blok jest teraz nad generatorem (= znacznik generatora). */
     public static void recordTypes(MinecraftClient mc, Waypoint w) {
-        ClientWorld world = mc.world;
-        if (world == null) return;
+        if (mc.world == null) return;
         Set<String> found = new TreeSet<>();
-        BlockPos.Mutable p = new BlockPos.Mutable();
-        for (int x = w.x1; x <= w.x2; x++) {
-            for (int z = w.z1; z <= w.z2; z++) {
-                if (world.getChunk(x >> 4, z >> 4, ChunkStatus.FULL, false) == null) continue;
-                for (int y = w.y1; y <= w.y2; y++) {
-                    BlockState st = world.getBlockState(p.set(x, y, z));
-                    if (st.isAir()) continue;
-                    found.add(Registries.BLOCK.getId(st.getBlock()).toString());
-                }
-            }
+        for (Entity e : mc.world.getEntities()) {
+            String sig = floatSig(e);
+            if (sig != null && inRegion(w, e.getPos())) found.add(sig);
         }
         w.setTypes(new ArrayList<>(found));
     }
 
-    /** 0 = nieznany (niezaladowane chunki), 1 = sa bloki, 2 = brak blokow. */
-    private static int checkState(ClientWorld world, Waypoint w) {
-        Set<String> ts = w.typeSet();
-        boolean unloaded = false;
-        BlockPos.Mutable p = new BlockPos.Mutable();
-        for (int x = w.x1; x <= w.x2; x++) {
-            for (int z = w.z1; z <= w.z2; z++) {
-                if (world.getChunk(x >> 4, z >> 4, ChunkStatus.FULL, false) == null) {
-                    unloaded = true;
-                    continue;
-                }
-                for (int y = w.y1; y <= w.y2; y++) {
-                    BlockState st = world.getBlockState(p.set(x, y, z));
-                    if (st.isAir()) continue;
-                    if (ts.isEmpty() || ts.contains(Registries.BLOCK.getId(st.getBlock()).toString())) return 1;
-                }
-            }
-        }
-        return unloaded ? 0 : 2;
-    }
-
-    public static void scanBlocks(MinecraftClient mc, int tick) {
+    /** Czerwony = lewitujacy blok jest w obszarze, bialy = nie ma go (gdy jestes blisko). */
+    public static void scanFloating(MinecraftClient mc) {
         if (mc.world == null || mc.player == null) return;
         String key = WaypointStore.currentKey(mc);
+        boolean any = false;
+        for (Waypoint w : WaypointStore.list) {
+            if (key.equals(w.world)) { any = true; break; }
+        }
+        if (!any) return;
+
+        List<Vec3d> poss = new ArrayList<>();
+        List<String> sigs = new ArrayList<>();
+        for (Entity e : mc.world.getEntities()) {
+            String sig = floatSig(e);
+            if (sig != null) {
+                poss.add(e.getPos());
+                sigs.add(sig);
+            }
+        }
+
         long now = System.currentTimeMillis();
         boolean changed = false;
-        int i = 0;
+
         for (Waypoint w : WaypointStore.list) {
             if (!key.equals(w.world)) continue;
-            i++;
-            if ((tick + i) % 20 != 0) continue;
-            if (w.volume() > MAX_VOLUME) continue;
-            int ns = checkState(mc.world, w);
-            if (ns == 0 || ns == w.state) continue;
+
+            Set<String> ts = w.typeSet();
+            boolean found = false;
+            for (int i = 0; i < poss.size(); i++) {
+                if (!inRegion(w, poss.get(i))) continue;
+                if (ts.isEmpty() || ts.contains(sigs.get(i))) { found = true; break; }
+            }
+
+            int ns;
+            if (found) {
+                w.absentScans = 0;
+                ns = 1;
+            } else {
+                // "brak" stwierdzamy tylko gdy jestes blisko (encje zaladowane) i nie tuz po wejsciu do swiata
+                double dx = w.centerX() - mc.player.getX();
+                double dy = w.y2 + 1 - mc.player.getY();
+                double dz = w.centerZ() - mc.player.getZ();
+                boolean near = dx * dx + dy * dy + dz * dz < 48 * 48;
+                if (!near || mc.player.age < 100) { w.absentScans = 0; continue; }
+                w.absentScans++;
+                if (w.absentScans < 3) continue;
+                ns = 2;
+            }
+
+            if (ns == w.state) continue;
             int prev = w.state;
             w.state = ns;
             changed = true;
+
             if (prev == 1 && ns == 2) {
-                // bloki zniknely -> zaczela sie regeneracja (jesli hologram nie podal czasu)
+                // lewitujacy blok zniknal -> zaczela sie regeneracja (jesli hologram nie podal czasu)
                 w.autoStartAt = 0;
                 w.autoCounting = false;
                 if (!w.isLive(now) && w.durationSec > 0) {
@@ -111,7 +143,7 @@ public class GeneratorScanner {
                     w.notified = false;
                 }
             } else if (prev == 2 && ns == 1) {
-                // bloki wrocily -> generator gotowy
+                // lewitujacy blok wrocil -> generator gotowy
                 if (w.endAt > now) {
                     w.endAt = now;
                     w.notified = false;

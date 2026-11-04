@@ -37,7 +37,7 @@ public class WaypointTimerMod implements ClientModInitializer {
             }
             tickCount++;
             if (tickCount % 5 == 0) GeneratorScanner.scanHolograms(client);
-            GeneratorScanner.scanBlocks(client, tickCount);
+            if (tickCount % 10 == 0) GeneratorScanner.scanFloating(client);
             WaypointStore.tick(client);
         });
 
@@ -94,9 +94,9 @@ public class WaypointTimerMod implements ClientModInitializer {
         WaypointStore.save();
 
         if (w.types.isEmpty()) {
-            msg(c, "Dodano obszar (pusty – liczę każdy blok). Czas wczyta się z hologramu.");
+            msg(c, "Dodano obszar (nie widzę lewitującego bloku – policzę każdy). Czas z hologramu.");
         } else {
-            msg(c, "Dodano obszar (typów bloków: " + w.types.size() + "). Czas wczyta się z hologramu.");
+            msg(c, "Dodano obszar (lewitujący blok wykryty). Czas wczyta się z hologramu.");
         }
     }
 }
