@@ -14,13 +14,29 @@ import org.joml.Quaternionf;
 import org.joml.Vector3f;
 import org.joml.Vector4f;
 
+import java.util.List;
+
 public class WaypointRenderer {
+    // obiekty uzywane ponownie - zero alokacji w klatce
+    private static final Quaternionf INV = new Quaternionf();
+    private static final Vector3f V = new Vector3f();
+    private static final Vector4f C = new Vector4f();
 
     public static void render(WorldRenderContext ctx) {
+        long t0 = System.nanoTime();
         WaypointHud.begin();
 
         MinecraftClient mc = MinecraftClient.getInstance();
         if (mc.world == null || mc.player == null) return;
+
+        List<Waypoint> act = WaypointStore.active(mc);
+        BlockPos pend = WaypointStore.pending;
+        boolean hasPend = pend != null && WaypointStore.currentKey(mc).equals(WaypointStore.pendingWorld);
+        if (act.isEmpty() && !hasPend) return;
+
+        boolean boxes = WaypointStore.showBoxes;
+        boolean labels = WaypointStore.showLabels;
+        if (!boxes && !labels && !hasPend) return;
 
         MatrixStack ms = ctx.matrixStack();
         VertexConsumerProvider consumers = ctx.consumers();
@@ -29,51 +45,65 @@ public class WaypointRenderer {
 
         Camera cam = ctx.camera();
         Vec3d cp = cam.getPos();
-        String key = WaypointStore.currentKey(mc);
         long now = System.currentTimeMillis();
-
-        MatrixStack.Entry entry = ms.peek();
-        VertexConsumer lines = consumers.getBuffer(RenderLayer.getLines());
-        Quaternionf inv = new Quaternionf(cam.getRotation()).conjugate();
+        INV.set(cam.getRotation()).conjugate();
         int sw = mc.getWindow().getScaledWidth();
         int sh = mc.getWindow().getScaledHeight();
+        int maxDist = WaypointStore.maxDist;
+        boolean hideLive = WaypointStore.hideLive;
 
-        for (Waypoint w : WaypointStore.list) {
-            if (!key.equals(w.world)) continue;
+        MatrixStack.Entry entry = null;
+        VertexConsumer lines = null;
+
+        for (int i = 0; i < act.size(); i++) {
+            Waypoint w = act.get(i);
 
             double ax = w.centerX(), ay = w.y2 + 1.5, az = w.centerZ();
             double dx = ax - cp.x, dy = ay - cp.y, dz = az - cp.z;
             double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            if (maxDist > 0 && dist > maxDist) continue;
 
-            // obrys obszaru: czerwony = sa bloki generatora, bialy = brak blokow
-            if (WaypointStore.showBoxes && dist < 400) {
+            // pozycja punktu w przestrzeni kamery -> (clip.w > 0 = przed kamera)
+            V.set((float) dx, (float) dy, (float) dz);
+            INV.transform(V);
+            C.set(V.x, V.y, V.z, 1f);
+            if (proj != null) proj.transform(C);
+            else C.w = 1f;
+
+            double ex = w.x2 - w.x1 + 1, ey = w.y2 - w.y1 + 1, ez = w.z2 - w.z1 + 1;
+            float radius = (float) (0.5 * Math.sqrt(ex * ex + ey * ey + ez * ez)) + 2f;
+            if (C.w < -radius) continue;   // caly obszar za plecami - nic nie rysuj
+
+            // obrys obszaru: czerwony = jest lewitujacy blok, bialy = brak
+            if (boxes && dist < 400) {
+                if (lines == null) {
+                    entry = ms.peek();
+                    lines = consumers.getBuffer(RenderLayer.getLines());
+                }
                 box(lines, entry, cp, w.x1, w.y1, w.z1, w.x2, w.y2, w.z2, w.statusColor());
             }
 
-            // napis na ekranie (widac z daleka, przez sciany)
-            if (!WaypointStore.showLabels) continue;
-            if (WaypointStore.hideLive && w.isLive(now) && dist < 12) continue;
-            if (proj == null) continue;
-
-            Vector3f v = new Vector3f((float) dx, (float) dy, (float) dz);
-            inv.transform(v);
-            Vector4f c = new Vector4f(v.x, v.y, v.z, 1f);
-            proj.transform(c);
-            if (c.w <= 0.05f) continue;
-            float nx = c.x / c.w, ny = c.y / c.w;
+            if (!labels) continue;
+            if (hideLive && w.isLive(now) && dist < 12) continue;
+            if (proj == null || C.w <= 0.05f) continue;
+            float nx = C.x / C.w, ny = C.y / C.w;
             if (Math.abs(nx) > 1.3f || Math.abs(ny) > 1.3f) continue;
-            float sx = (nx * 0.5f + 0.5f) * sw;
-            float sy = (0.5f - ny * 0.5f) * sh;
-            WaypointHud.add(w, sx, sy, dist);
+            WaypointHud.add(w, (nx * 0.5f + 0.5f) * sw, (0.5f - ny * 0.5f) * sh, dist);
         }
 
         // pierwszy zaznaczony rog (zolty)
-        BlockPos pend = WaypointStore.pending;
-        if (pend != null && key.equals(WaypointStore.pendingWorld)) {
+        if (hasPend) {
+            if (lines == null) {
+                entry = ms.peek();
+                lines = consumers.getBuffer(RenderLayer.getLines());
+            }
             box(lines, entry, cp, pend.getX(), pend.getY(), pend.getZ(), pend.getX(), pend.getY(), pend.getZ(), 0xFFFF55);
         }
 
-        if (consumers instanceof VertexConsumerProvider.Immediate imm) imm.draw();
+        if (lines != null && consumers instanceof VertexConsumerProvider.Immediate imm) {
+            imm.draw(RenderLayer.getLines());
+        }
+        Perf.world(System.nanoTime() - t0);
     }
 
     private static void box(VertexConsumer vc, MatrixStack.Entry e, Vec3d cp,

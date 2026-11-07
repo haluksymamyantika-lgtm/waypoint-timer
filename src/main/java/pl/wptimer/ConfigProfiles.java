@@ -113,6 +113,7 @@ public class ConfigProfiles {
                 WaypointStore.applySettings(d);
                 WaypointStore.list = incoming;
             }
+            WaypointStore.invalidate();
             WaypointStore.save();
             return true;
         } catch (Exception e) {

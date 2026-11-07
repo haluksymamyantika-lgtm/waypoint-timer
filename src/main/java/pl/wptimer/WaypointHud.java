@@ -5,6 +5,7 @@ import net.minecraft.client.font.TextRenderer;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.text.MutableText;
+import net.minecraft.text.OrderedText;
 import net.minecraft.text.Style;
 import net.minecraft.text.Text;
 import net.minecraft.text.TextColor;
@@ -14,10 +15,21 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Karty z czasem rysowane na ekranie w miejscu obszaru:
- * widac je z kazdej odleglosci i przez sciany.
+ * Karty z czasem rysowane na ekranie w miejscu obszaru (widac je z kazdej odleglosci).
+ * Teksty sa budowane tylko gdy sie zmienia (raz na sekunde), a nie w kazdej klatce.
  */
 public class WaypointHud {
+    /** Gotowe, zbuforowane teksty karty. */
+    public static class Card {
+        String name;
+        int color;
+        boolean bold;
+        long sec = Long.MIN_VALUE;
+        int distI = -1;
+        OrderedText nameO, timerO, distO;
+        int wn, wt, wd;
+    }
+
     private static class Item {
         Waypoint w;
         float sx, sy;
@@ -25,35 +37,46 @@ public class WaypointHud {
     }
 
     private static final List<Item> items = new ArrayList<>();
+    private static int used = 0;
 
     public static void begin() {
-        items.clear();
+        used = 0;
     }
 
     public static void add(Waypoint w, float sx, float sy, double dist) {
-        Item it = new Item();
+        Item it;
+        if (used < items.size()) {
+            it = items.get(used);
+        } else {
+            it = new Item();
+            items.add(it);
+        }
+        used++;
         it.w = w;
         it.sx = sx;
         it.sy = sy;
         it.dist = dist;
-        items.add(it);
     }
 
     public static void draw(DrawContext dc) {
+        if (used == 0) return;
         MinecraftClient mc = MinecraftClient.getInstance();
         if (mc.world == null || mc.player == null || mc.options.hudHidden) return;
+        long t0 = System.nanoTime();
         TextRenderer tr = mc.textRenderer;
         long now = System.currentTimeMillis();
         float s = WaypointStore.scale;
+        MatrixStack m = dc.getMatrices();
 
-        for (Item it : items) {
-            MatrixStack m = dc.getMatrices();
+        for (int i = 0; i < used; i++) {
+            Item it = items.get(i);
             m.push();
             m.translate(it.sx, it.sy, 0f);
             m.scale(s, s, 1f);
             drawCard(dc, tr, it.w, it.dist, now);
             m.pop();
         }
+        Perf.hud(System.nanoTime() - t0);
     }
 
     private static void rr(DrawContext dc, int x1, int y1, int x2, int y2, int c) {
@@ -67,20 +90,48 @@ public class WaypointHud {
 
     /** Rysuje karte tak, ze dolny srodek strzalki jest w punkcie (0,0). */
     public static void drawCard(DrawContext dc, TextRenderer tr, Waypoint w, double dist, long now) {
+        Card c = w.card;
+        if (c == null) {
+            c = new Card();
+            w.card = c;
+        }
+
         boolean ready = w.isReady(now);
+        long sec = ready ? -1 : (w.endAt <= 0 ? -2 : (w.endAt - now + 999) / 1000);
 
-        Text nameT = Text.literal(w.name)
-                .setStyle(Style.EMPTY.withColor(TextColor.fromRgb(w.color)).withBold(w.bold));
-        Text distT = Text.literal((int) dist + " m").formatted(Formatting.GRAY);
+        // nazwa - budowana tylko przy zmianie
+        if (c.nameO == null || !w.name.equals(c.name) || w.color != c.color || w.bold != c.bold) {
+            c.name = w.name;
+            c.color = w.color;
+            c.bold = w.bold;
+            c.nameO = Text.literal(w.name)
+                    .setStyle(Style.EMPTY.withColor(TextColor.fromRgb(w.color)).withBold(w.bold))
+                    .asOrderedText();
+            c.wn = tr.getWidth(c.nameO);
+        }
 
-        MutableText timerT = Text.literal("⌚ ").formatted(Formatting.WHITE);
-        if (ready) {
-            timerT.append(Text.literal("Gotowy").formatted(Formatting.GREEN, Formatting.BOLD));
-        } else if (w.endAt <= 0) {
-            timerT.append(Text.literal("Brak czasu").formatted(Formatting.GRAY));
-        } else {
-            timerT.append(Text.literal("Regeneracja za ").formatted(Formatting.WHITE, Formatting.BOLD));
-            timerT.append(Text.literal(w.timerText(now)).formatted(Formatting.YELLOW, Formatting.BOLD));
+        // czas - budowany raz na sekunde
+        if (c.timerO == null || sec != c.sec) {
+            c.sec = sec;
+            MutableText t = Text.literal("⌚ ").formatted(Formatting.WHITE);
+            if (sec == -1) {
+                t.append(Text.literal("Gotowy").formatted(Formatting.GREEN, Formatting.BOLD));
+            } else if (sec == -2) {
+                t.append(Text.literal("Brak czasu").formatted(Formatting.GRAY));
+            } else {
+                t.append(Text.literal("Regeneracja za ").formatted(Formatting.WHITE, Formatting.BOLD));
+                t.append(Text.literal(Waypoint.fmt(sec)).formatted(Formatting.YELLOW, Formatting.BOLD));
+            }
+            c.timerO = t.asOrderedText();
+            c.wt = tr.getWidth(c.timerO);
+        }
+
+        // dystans - budowany gdy zmieni sie pelny metr
+        int di = (int) dist;
+        if (c.distO == null || di != c.distI) {
+            c.distI = di;
+            c.distO = Text.literal(di + " m").formatted(Formatting.GRAY).asOrderedText();
+            c.wd = tr.getWidth(c.distO);
         }
 
         boolean names = WaypointStore.showNames;
@@ -88,11 +139,8 @@ public class WaypointHud {
         boolean prog = WaypointStore.showProgress;
         boolean bar = WaypointStore.showBar;
 
-        int wn = names ? tr.getWidth(nameT) : 0;
-        int wd = dists ? tr.getWidth(distT) : 0;
-        int wt = tr.getWidth(timerT);
-        int w1 = names ? wn + (dists ? 10 + wd : 0) : wt + (dists ? 10 + wd : 0);
-        int w2 = names ? wt : 0;
+        int w1 = names ? c.wn + (dists ? 10 + c.wd : 0) : c.wt + (dists ? 10 + c.wd : 0);
+        int w2 = names ? c.wt : 0;
         int half = Math.max(w1, w2) / 2 + 6;
         int lines = names ? 2 : 1;
         int h = prog ? 12 + lines * 12 : 7 + lines * 12;
@@ -117,12 +165,12 @@ public class WaypointHud {
 
         // tresc
         int y1 = top + 5;
-        if (dists) dc.drawTextWithShadow(tr, distT, half - 6 - wd, y1, 0xFFFFFFFF);
+        if (dists) dc.drawTextWithShadow(tr, c.distO, half - 6 - c.wd, y1, 0xFFFFFFFF);
         if (names) {
-            dc.drawTextWithShadow(tr, nameT, -half + 6, y1, 0xFFFFFFFF);
-            dc.drawTextWithShadow(tr, timerT, -half + 6, y1 + 12, 0xFFFFFFFF);
+            dc.drawTextWithShadow(tr, c.nameO, -half + 6, y1, 0xFFFFFFFF);
+            dc.drawTextWithShadow(tr, c.timerO, -half + 6, y1 + 12, 0xFFFFFFFF);
         } else {
-            dc.drawTextWithShadow(tr, timerT, -half + 6, y1, 0xFFFFFFFF);
+            dc.drawTextWithShadow(tr, c.timerO, -half + 6, y1, 0xFFFFFFFF);
         }
 
         // pasek postepu

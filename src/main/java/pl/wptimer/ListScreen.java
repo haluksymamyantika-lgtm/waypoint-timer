@@ -25,27 +25,38 @@ import java.util.function.DoubleConsumer;
 import java.util.function.DoubleSupplier;
 import java.util.function.Supplier;
 
-/** Menu moda: ciemny panel, boczna nawigacja, rozowy akcent, podglad, podpowiedzi, configi. */
+/**
+ * Menu moda: ciemny panel, boczna nawigacja, rozowy akcent, sekcje, podglad na zywo,
+ * wyszukiwarka i sortowanie, configi, statystyki wydajnosci, podpowiedzi.
+ * Przewijanie nie przebudowuje kontrolek (plynne, bez kosztu).
+ */
 public class ListScreen extends Screen {
     private static final int C_DIM = 0xB8000000;
     private static final int C_BG = 0xFF17171E;
     private static final int C_CARD = 0xFF20202A;
+    private static final int C_CARD_HOV = 0xFF272733;
     private static final int C_LINE = 0xFF2E2E3A;
     private static final int C_ACC = 0xFFFF4D94;
     private static final int C_TEXT = 0xFFEDEDF2;
     private static final int C_MUTED = 0xFF8C8C9A;
+    private static final int C_SEC = 0xFF6F6F80;
+
+    private static final int ROW_H = 36, ROW_STEP = 40;
 
     private static final int T_AREAS = 0, T_LOOK = 1, T_SET = 2, T_CFG = 3, T_KEYS = 4;
     private static final String[] TAB_NAMES = {"Obszary", "Wygląd", "Ustawienia", "Configi", "Klawisze"};
     private static final String[] TAB_DESC = {
             "Zaznaczone generatory i ich czasy",
             "Jak wyglądają napisy z czasem",
-            "Zachowanie moda",
+            "Zachowanie moda i wydajność",
             "Zapisane zestawy obszarów i ustawień",
             "Skróty klawiszowe"};
+    private static final String[] SORT_NAMES = {"Kolejność", "Nazwa", "Czas", "Status"};
 
     private static int tab = T_AREAS;
     private static boolean remap = false;
+    private static String filterText = "";
+    private static int sortMode = 0;
     private static Waypoint PREVIEW;
 
     private int scroll = 0, contentH = 0, vTop, vBottom;
@@ -57,17 +68,22 @@ public class ListScreen extends Screen {
     private long statusUntil = 0;
     private String cfgText = "";
     private List<ConfigProfiles.Info> profiles = new ArrayList<>();
+    private boolean profilesDirty = true;
     private List<Waypoint> shown = new ArrayList<>();
+    private int areaCount = 0;
+    private final long openAt = System.currentTimeMillis();
+    private boolean sbDrag = false;
 
-    private int px, py, pw, ph, side, cx, cy, cw;
+    private int px, py, pw, ph, side, cx, cy, cw, cwi;
     private int swBase;
     private final List<Btn> btns = new ArrayList<>();
     private final List<Slide> slides = new ArrayList<>();
     private final List<Tip> tips = new ArrayList<>();
     private final List<RowDef> rowDefs = new ArrayList<>();
     private final List<SwDef> swDefs = new ArrayList<>();
+    private final List<SecDef> secDefs = new ArrayList<>();
     private Slide dragging = null;
-    private TextFieldWidget nameF, minF, secF, cfgF;
+    private TextFieldWidget nameF, minF, secF, cfgF, searchF;
 
     public ListScreen() {
         super(Text.literal("Waypoint Timer"));
@@ -76,7 +92,7 @@ public class ListScreen extends Screen {
     // ------------------------------------------------------------ kontrolki
 
     private static class Btn {
-        final int x, y, w, h;
+        final int x, ly, w, h;   // ly: pozycja logiczna (przewijana) lub bezwzgledna (stala)
         final Supplier<String> label;
         final int style; // 0 zwykly, 1 akcent, 2 czerwony, 3 zakladka, 4 przelacznik, 5 probka koloru
         final Runnable act;
@@ -86,9 +102,9 @@ public class ListScreen extends Screen {
         int color;
         float hv;
 
-        Btn(int x, int y, int w, int h, Supplier<String> label, int style, Runnable act) {
+        Btn(int x, int ly, int w, int h, Supplier<String> label, int style, Runnable act) {
             this.x = x;
-            this.y = y;
+            this.ly = ly;
             this.w = w;
             this.h = h;
             this.label = label;
@@ -108,7 +124,7 @@ public class ListScreen extends Screen {
     }
 
     private static class Slide {
-        final int x, y, w;
+        final int x, ly, w;
         final DoubleSupplier get;
         final DoubleConsumer set;
         final Supplier<String> label;
@@ -116,9 +132,9 @@ public class ListScreen extends Screen {
         boolean scroll;
         String tip;
 
-        Slide(int x, int y, int w, DoubleSupplier get, DoubleConsumer set, Supplier<String> label, Runnable done) {
+        Slide(int x, int ly, int w, DoubleSupplier get, DoubleConsumer set, Supplier<String> label, Runnable done) {
             this.x = x;
-            this.y = y;
+            this.ly = ly;
             this.w = w;
             this.get = get;
             this.set = set;
@@ -143,14 +159,16 @@ public class ListScreen extends Screen {
     }
 
     private static class Tip {
-        final int x, y, w, h;
+        final int x, ly, w, h;
+        final boolean scroll;
         final String text;
 
-        Tip(int x, int y, int w, int h, String text) {
+        Tip(int x, int ly, int w, int h, boolean scroll, String text) {
             this.x = x;
-            this.y = y;
+            this.ly = ly;
             this.w = w;
             this.h = h;
+            this.scroll = scroll;
             this.text = text;
         }
     }
@@ -163,6 +181,16 @@ public class ListScreen extends Screen {
             this.ly = ly;
             this.h = h;
             this.label = label;
+        }
+    }
+
+    private static class SecDef {
+        final int ly;
+        final String text;
+
+        SecDef(int ly, String text) {
+            this.ly = ly;
+            this.text = text;
         }
     }
 
@@ -183,6 +211,14 @@ public class ListScreen extends Screen {
 
     private int Y(int ly) {
         return vTop + ly - scroll;
+    }
+
+    private int by(Btn b) {
+        return b.scroll ? vTop + b.ly - scroll : b.ly;
+    }
+
+    private int sy(Slide s) {
+        return s.scroll ? vTop + s.ly - scroll : s.ly;
     }
 
     private int viewH() {
@@ -222,14 +258,24 @@ public class ListScreen extends Screen {
         dc.fill(x, y + 1, x + w, y + h - 1, c);
     }
 
+    private static boolean in(double mx, double my, int x, int y, int w, int h) {
+        return mx >= x && mx < x + w && my >= y && my < y + h;
+    }
+
+    private boolean inView(double my) {
+        return my >= vTop && my <= vBottom;
+    }
+
     private boolean hitB(Btn b, double mx, double my) {
-        if (mx < b.x || mx >= b.x + b.w || my < b.y || my >= b.y + b.h) return false;
-        return !b.scroll || (my >= vTop && my <= vBottom);
+        int y = by(b);
+        if (!in(mx, my, b.x, y, b.w, b.h)) return false;
+        return !b.scroll || inView(my);
     }
 
     private boolean hitS(Slide s, double mx, double my) {
-        if (mx < s.x - 5 || mx > s.x + s.w + 5 || my < s.y - 8 || my > s.y + 8) return false;
-        return !s.scroll || (my >= vTop && my <= vBottom);
+        int y = sy(s);
+        if (mx < s.x - 5 || mx > s.x + s.w + 5 || my < y - 8 || my > y + 8) return false;
+        return !s.scroll || inView(my);
     }
 
     private SwDef sd(String label, BooleanSupplier g, Runnable f, String tip) {
@@ -245,11 +291,13 @@ public class ListScreen extends Screen {
         tips.clear();
         rowDefs.clear();
         swDefs.clear();
+        secDefs.clear();
         dragging = null;
         nameF = null;
         minF = null;
         secF = null;
         cfgF = null;
+        searchF = null;
 
         pw = Math.min(450, width - 16);
         ph = Math.min(280, height - 16);
@@ -258,9 +306,11 @@ public class ListScreen extends Screen {
         side = 94;
         cx = px + side + 14;
         cw = pw - side - 28;
+        cwi = cw - 10;
         cy = py + 46;
         vTop = cy;
         vBottom = py + ph - 22;
+        areaCount = WaypointStore.current(client).size();
 
         for (int i = 0; i < TAB_NAMES.length; i++) {
             final int t = i;
@@ -270,6 +320,7 @@ public class ListScreen extends Screen {
                 scroll = 0;
                 listening = null;
                 confirmDelete = null;
+                if (t == T_CFG) profilesDirty = true;
                 rebuild();
             });
             b.state = () -> tab == t;
@@ -299,32 +350,59 @@ public class ListScreen extends Screen {
 
     // --- Obszary
 
-    private void buildAreas() {
-        shown = WaypointStore.current(client);
-        contentH = shown.size() * 40;
-        clampScroll();
-        int xr = cx + cw - 12;
+    private static long remain(Waypoint w, long now) {
+        if (w.isReady(now)) return -1;
+        return w.endAt <= 0 ? Long.MAX_VALUE : w.endAt - now;
+    }
 
-        for (int i = 0; i < shown.size(); i++) {
-            final Waypoint w = shown.get(i);
-            int y = Y(i * 40);
-            btns.add(new Btn(xr - 20, y + 8, 20, 20, () -> "x", 2, () -> {
-                WaypointStore.list.remove(w);
-                WaypointStore.save();
-                rebuild();
-            }).sc().tip("Usuń obszar"));
-            btns.add(new Btn(xr - 70, y + 8, 46, 20, () -> "Edytuj", 0, () -> {
-                editing = w;
-                editRepeat = w.repeat;
-                rebuild();
-            }).sc().tip("Nazwa, czas regeneracji i powtarzanie"));
-            btns.add(new Btn(xr - 118, y + 8, 44, 20, () -> "Bloki", 0, () -> {
-                GeneratorScanner.recordTypes(client, w);
-                w.state = 0;
-                WaypointStore.save();
-                setStatus("Zapisano znaczniki lewitującego bloku: " + w.types.size());
-            }).sc().tip("Zapamiętaj lewitujący blok nad generatorem\n(kliknij, gdy generator jest pełny)"));
+    private static int order(Waypoint w) {
+        return w.state == 1 ? 0 : (w.state == 2 ? 1 : 2);
+    }
+
+    private void refreshShown() {
+        long now = System.currentTimeMillis();
+        List<Waypoint> l = new ArrayList<>(WaypointStore.current(client));
+        if (!filterText.isEmpty()) {
+            String f = filterText.toLowerCase(Locale.ROOT);
+            l.removeIf(w -> !w.name.toLowerCase(Locale.ROOT).contains(f));
         }
+        switch (sortMode) {
+            case 1:
+                l.sort((a, b) -> a.name.compareToIgnoreCase(b.name));
+                break;
+            case 2:
+                l.sort((a, b) -> Long.compare(remain(a, now), remain(b, now)));
+                break;
+            case 3:
+                l.sort((a, b) -> Integer.compare(order(a), order(b)));
+                break;
+            default:
+                break;
+        }
+        shown = l;
+        contentH = shown.size() * ROW_STEP;
+        clampScroll();
+    }
+
+    private void buildAreas() {
+        searchF = new TextFieldWidget(textRenderer, cx, cy, cw - 116, 18, Text.empty());
+        searchF.setMaxLength(30);
+        searchF.setText(filterText);
+        searchF.setChangedListener(s -> {
+            filterText = s;
+            scroll = 0;
+            refreshShown();
+        });
+        addDrawableChild(searchF);
+
+        btns.add(new Btn(cx + cw - 110, cy, 110, 18, () -> "Sortuj: " + SORT_NAMES[sortMode], 0, () -> {
+            sortMode = (sortMode + 1) % SORT_NAMES.length;
+            scroll = 0;
+            refreshShown();
+        }).tip("Zmień kolejność listy:\nkolejność / nazwa / czas / status"));
+
+        vTop = cy + 26;
+        refreshShown();
     }
 
     // --- Edycja obszaru
@@ -355,13 +433,13 @@ public class ListScreen extends Screen {
         btns.add(rep.tip("Po zakończeniu odliczanie startuje od nowa"));
 
         int bw = (cw - 8) / 3;
-        int by = cy + 104;
-        btns.add(new Btn(cx, by, bw, 22, () -> "Anuluj", 0, () -> {
+        int byy = cy + 104;
+        btns.add(new Btn(cx, byy, bw, 22, () -> "Anuluj", 0, () -> {
             editing = null;
             rebuild();
         }));
-        btns.add(new Btn(cx + bw + 4, by, bw, 22, () -> "Zapisz", 0, () -> saveEdit(false)));
-        btns.add(new Btn(cx + 2 * (bw + 4), by, bw, 22, () -> "Zapisz i start", 1, () -> saveEdit(true)));
+        btns.add(new Btn(cx + bw + 4, byy, bw, 22, () -> "Zapisz", 0, () -> saveEdit(false)));
+        btns.add(new Btn(cx + 2 * (bw + 4), byy, bw, 22, () -> "Zapisz i start", 1, () -> saveEdit(true)));
 
         setInitialFocus(nameF);
     }
@@ -393,48 +471,51 @@ public class ListScreen extends Screen {
         rebuild();
     }
 
-    // --- Wyglad
+    // --- Przelaczniki w dwoch kolumnach
 
     private void addSwitches(int baseLy, SwDef... defs) {
         swBase = baseLy;
-        int cwi = cw - 10;
         int colW = (cwi - 4) / 2;
         for (int i = 0; i < defs.length; i++) {
             SwDef d = defs[i];
             swDefs.add(d);
             int x = cx + (i % 2) * (colW + 4);
             int ly = baseLy + (i / 2) * 30;
-            Btn b = new Btn(x + colW - 38, Y(ly) + 6, 30, 14, () -> "", 4, d.flip);
+            Btn b = new Btn(x + colW - 38, ly + 6, 30, 14, () -> "", 4, d.flip);
             b.state = d.get;
             btns.add(b.sc().tip(d.tip));
-            tips.add(new Tip(x, Y(ly), colW, 26, d.tip));
+            tips.add(new Tip(x, ly, colW, 26, true, d.tip));
         }
     }
 
+    // --- Wyglad
+
     private void buildLook() {
-        int cwi = cw - 10;
-        contentH = 168 + 4 * 30;
+        contentH = 216 + 4 * 30 + 4;
         clampScroll();
         int sx = cx + cwi - 10 - 120;
 
-        rowDefs.add(new RowDef(72, 28, "Rozmiar"));
-        slides.add(new Slide(sx, Y(72) + 14, 120,
+        secDefs.add(new SecDef(0, "PODGLĄD"));
+
+        secDefs.add(new SecDef(90, "ROZMIAR I TŁO"));
+        rowDefs.add(new RowDef(104, 28, "Rozmiar"));
+        slides.add(new Slide(sx, 104 + 14, 120,
                 () -> Math.sqrt(Math.max(0.0, Math.min(1.0, (WaypointStore.scale - 0.05) / 5.95))),
                 v -> WaypointStore.scale = (float) (0.05 + 5.95 * v * v),
                 () -> String.format(Locale.US, "%.2f", WaypointStore.scale),
                 WaypointStore::save).sc().tip("Rozmiar napisów w świecie\n(od bardzo małych do dużych)"));
 
-        rowDefs.add(new RowDef(104, 28, "Tło napisów"));
-        slides.add(new Slide(sx, Y(104) + 14, 120,
+        rowDefs.add(new RowDef(136, 28, "Tło napisów"));
+        slides.add(new Slide(sx, 136 + 14, 120,
                 () -> WaypointStore.bgOpacity / 100.0,
                 v -> WaypointStore.bgOpacity = (int) Math.round(v * 100),
                 () -> WaypointStore.bgOpacity == 0 ? "przezroczyste" : WaypointStore.bgOpacity + "%",
                 WaypointStore::save).sc().tip("Przezroczystość tła karty\n(0% = całkiem przezroczyste)"));
 
-        rowDefs.add(new RowDef(136, 28, "Kolor tła"));
+        rowDefs.add(new RowDef(168, 28, "Kolor tła"));
         for (int i = 0; i < WaypointStore.BG_COLORS.length; i++) {
             final int idx = i;
-            Btn sw = new Btn(cx + cwi - 10 - 104 + i * 18, Y(136) + 7, 14, 14, () -> "", 5, () -> {
+            Btn sw = new Btn(cx + cwi - 10 - 104 + i * 18, 168 + 7, 14, 14, () -> "", 5, () -> {
                 WaypointStore.bgColorIdx = idx;
                 WaypointStore.save();
             });
@@ -443,7 +524,8 @@ public class ListScreen extends Screen {
             btns.add(sw.sc().tip("Kolor tła: " + WaypointStore.BG_NAMES[i]));
         }
 
-        addSwitches(168,
+        secDefs.add(new SecDef(202, "ELEMENTY KARTY"));
+        addSwitches(216,
                 sd("Pokaż napisy", () -> WaypointStore.showLabels, () -> {
                     WaypointStore.showLabels = !WaypointStore.showLabels;
                     WaypointStore.save();
@@ -478,22 +560,22 @@ public class ListScreen extends Screen {
                 }, "Chowa moją kartę w promieniu 12 m,\ngdy widać oryginalny hologram"));
     }
 
-    // --- Ustawienia
+    // --- Ustawienia + wydajnosc
 
     private void buildSettings() {
-        int cwi = cw - 10;
-        contentH = 34 + 2 * 30 + 4 + 22;
+        contentH = 258 + 22 + 4;
         clampScroll();
         int sx = cx + cwi - 10 - 120;
 
-        rowDefs.add(new RowDef(0, 28, "Opóźnienie auto-startu"));
-        slides.add(new Slide(sx, Y(0) + 14, 120,
+        secDefs.add(new SecDef(0, "AUTOMATYZACJA"));
+        rowDefs.add(new RowDef(14, 28, "Opóźnienie auto-startu"));
+        slides.add(new Slide(sx, 14 + 14, 120,
                 () -> WaypointStore.startDelaySec / 30.0,
                 v -> WaypointStore.startDelaySec = (int) Math.round(v * 30),
                 () -> WaypointStore.startDelaySec + " s",
                 WaypointStore::save).sc().tip("Po ilu sekundach od regeneracji\nmod zaczyna kolejne odliczanie"));
 
-        addSwitches(34,
+        addSwitches(48,
                 sd("Auto-start", () -> WaypointStore.autoStart, () -> {
                     WaypointStore.autoStart = !WaypointStore.autoStart;
                     WaypointStore.save();
@@ -507,7 +589,31 @@ public class ListScreen extends Screen {
                     WaypointStore.save();
                 }, "Napis „GOTOWE” na pasku akcji"));
 
-        btns.add(new Btn(cx, Y(34 + 60 + 4), cwi, 22, () -> "Przywróć domyślny wygląd napisów", 0, () -> {
+        secDefs.add(new SecDef(116, "WYDAJNOŚĆ"));
+        rowDefs.add(new RowDef(130, 28, "Zasięg napisów"));
+        slides.add(new Slide(sx, 130 + 14, 120,
+                () -> WaypointStore.maxDist == 0 ? 1.0 : Math.min(0.98, (WaypointStore.maxDist - 25) / 975.0 * 0.99),
+                v -> {
+                    if (v >= 0.99) WaypointStore.maxDist = 0;
+                    else WaypointStore.maxDist = 25 + (int) Math.round(v / 0.99 * 975 / 25.0) * 25;
+                },
+                () -> WaypointStore.maxDist == 0 ? "bez limitu" : WaypointStore.maxDist + " m",
+                WaypointStore::save).sc().tip("Obszary dalsze niż ten zasięg nie są\nw ogóle rysowane (mniej pracy dla FPS)"));
+
+        rowDefs.add(new RowDef(162, 28, "Skanowanie encji"));
+        slides.add(new Slide(sx, 162 + 14, 120,
+                () -> {
+                    for (int i = 0; i < WaypointStore.SCAN_VALUES.length; i++) {
+                        if (WaypointStore.SCAN_VALUES[i] == WaypointStore.scanTicks) return i / 3.0;
+                    }
+                    return 1 / 3.0;
+                },
+                v -> WaypointStore.scanTicks = WaypointStore.SCAN_VALUES[(int) Math.round(v * 3)],
+                () -> String.format(Locale.US, "co %.2f s", WaypointStore.scanTicks / 20.0),
+                WaypointStore::save).sc().tip("Jak często mod sprawdza hologramy.\nRzadziej = mniejsze obciążenie"));
+
+        secDefs.add(new SecDef(242, "RESET"));
+        btns.add(new Btn(cx, 256, cwi, 22, () -> "Przywróć domyślny wygląd napisów", 0, () -> {
             WaypointStore.resetLook();
             setStatus("Przywrócono domyślny wygląd");
         }).sc().tip("Rozmiar, tło i dodatki kart wracają do ustawień fabrycznych"));
@@ -516,9 +622,12 @@ public class ListScreen extends Screen {
     // --- Configi
 
     private void buildConfigs() {
-        profiles = ConfigProfiles.list();
+        if (profilesDirty) {
+            profiles = ConfigProfiles.list();
+            profilesDirty = false;
+        }
         vTop = cy + 52;
-        contentH = profiles.size() * 40;
+        contentH = profiles.size() * ROW_STEP;
         clampScroll();
 
         cfgF = new TextFieldWidget(textRenderer, cx, cy, cw - 108, 20, Text.empty());
@@ -534,6 +643,7 @@ public class ListScreen extends Screen {
             }
             boolean ok = ConfigProfiles.save(n);
             cfgText = "";
+            profilesDirty = true;
             setStatus(ok ? "Zapisano config „" + n + "”" : "Nie udało się zapisać configu");
             rebuild();
         }).tip("Zapisuje obecne obszary i wszystkie ustawienia\npod podaną nazwą (ta sama nazwa = nadpisanie)"));
@@ -541,59 +651,28 @@ public class ListScreen extends Screen {
         Btn rm = new Btn(cx + cw - 30, cy + 29, 30, 14, () -> "", 4, () -> remap = !remap);
         rm.state = () -> remap;
         btns.add(rm.tip("Wczytane obszary zostaną przypisane do\nobecnego serwera / świata, w którym jesteś"));
-        tips.add(new Tip(cx, cy + 26, cw, 20, "Wczytane obszary zostaną przypisane do\nobecnego serwera / świata, w którym jesteś"));
-
-        int xr = cx + cw - 12;
-        for (int i = 0; i < profiles.size(); i++) {
-            final ConfigProfiles.Info in = profiles.get(i);
-            int y = Y(i * 40);
-            btns.add(new Btn(xr - 20, y + 8, 20, 20,
-                    () -> in.name.equals(confirmDelete) ? "?" : "x", 2, () -> {
-                if (in.name.equals(confirmDelete)) {
-                    ConfigProfiles.delete(in.name);
-                    confirmDelete = null;
-                    setStatus("Usunięto config „" + in.name + "”");
-                    rebuild();
-                } else {
-                    confirmDelete = in.name;
-                }
-            }).sc().tip("Usuń config (kliknij dwa razy)"));
-            btns.add(new Btn(xr - 74, y + 8, 50, 20, () -> "Nadpisz", 0, () -> {
-                ConfigProfiles.save(in.name);
-                setStatus("Nadpisano config „" + in.name + "”");
-                rebuild();
-            }).sc().tip("Zapisz obecny stan do tego configu"));
-            btns.add(new Btn(xr - 124, y + 8, 46, 20, () -> "Dołącz", 0, () -> {
-                boolean ok = ConfigProfiles.load(in.name, remap, WaypointStore.currentKey(client), true);
-                setStatus(ok ? "Dołączono obszary z „" + in.name + "”" : "Nie udało się wczytać");
-                rebuild();
-            }).sc().tip("Dodaje obszary z configu do obecnych\n(ustawienia zostają bez zmian)"));
-            btns.add(new Btn(xr - 176, y + 8, 48, 20, () -> "Wczytaj", 1, () -> {
-                boolean ok = ConfigProfiles.load(in.name, remap, WaypointStore.currentKey(client), false);
-                setStatus(ok ? "Wczytano config „" + in.name + "”" : "Nie udało się wczytać");
-                rebuild();
-            }).sc().tip("Zastępuje obecne obszary i ustawienia\nzawartością tego configu"));
-        }
+        tips.add(new Tip(cx, cy + 26, cw - 34, 20, false, "Wczytane obszary zostaną przypisane do\nobecnego serwera / świata, w którym jesteś"));
     }
 
     // --- Klawisze
 
     private void buildKeys() {
-        contentH = 36 + 30 + 40;
+        contentH = 14 + 36 + 30 + 50;
         clampScroll();
+        secDefs.add(new SecDef(0, "SKRÓTY"));
         KeyBinding[] kbs = {WaypointTimerMod.selectKey, WaypointTimerMod.listKey};
         String[] labels = {"Zaznacz róg obszaru", "Otwórz menu"};
-        int xr = cx + cw - 10 - 8;
+        int xr = cx + cwi - 8;
         for (int i = 0; i < kbs.length; i++) {
             final KeyBinding kb = kbs[i];
-            int ly = i * 36;
+            int ly = 14 + i * 36;
             rowDefs.add(new RowDef(ly, 30, labels[i]));
-            Btn key = new Btn(xr - 44 - 110, Y(ly) + 5, 110, 20,
+            Btn key = new Btn(xr - 44 - 110, ly + 5, 110, 20,
                     () -> listening == kb ? "> naciśnij <" : kb.getBoundKeyLocalizedText().getString(), 0,
                     () -> listening = kb);
             key.state = () -> listening == kb;
             btns.add(key.sc().tip("Kliknij, potem naciśnij nowy klawisz"));
-            btns.add(new Btn(xr - 40, Y(ly) + 5, 40, 20, () -> "Reset", 0, () -> {
+            btns.add(new Btn(xr - 40, ly + 5, 40, 20, () -> "Reset", 0, () -> {
                 kb.setBoundKey(kb.getDefaultKey());
                 KeyBinding.updateKeysByCode();
                 client.options.write();
@@ -630,8 +709,18 @@ public class ListScreen extends Screen {
 
         super.render(dc, mx, my, delta);   // pola tekstowe
 
+        // placeholdery
         if (cfgF != null && cfgF.getText().isEmpty() && !cfgF.isFocused()) {
             dc.drawTextWithShadow(textRenderer, "Nazwa configu…", cfgF.getX() + 5, cfgF.getY() + 6, 0xFF6C6C7A);
+        }
+        if (searchF != null && searchF.getText().isEmpty() && !searchF.isFocused()) {
+            dc.drawTextWithShadow(textRenderer, "Szukaj obszaru…", searchF.getX() + 5, searchF.getY() + 5, 0xFF6C6C7A);
+        }
+
+        // plynne pojawianie sie menu
+        float t = Math.min(1f, (System.currentTimeMillis() - openAt) / 160f);
+        if (t < 1f) {
+            dc.fill(0, 0, width, height, ((int) ((1f - t) * 170)) << 24);
         }
 
         drawTooltip(dc, mx, my);
@@ -656,13 +745,18 @@ public class ListScreen extends Screen {
         dc.drawTextWithShadow(textRenderer, "generatory", px + 19, py + 21, C_MUTED);
         dc.fill(px + 8, py + 44, px + side - 8, py + 45, C_LINE);
 
-        int n = WaypointStore.current(client).size();
-        dc.drawTextWithShadow(textRenderer, "Obszary: " + n, px + 10, py + ph - 34, C_MUTED);
-        dc.drawTextWithShadow(textRenderer, "v7 · 1.21.4", px + 10, py + ph - 22, 0xFF5E5E6C);
+        // plakietka z liczba obszarow przy zakladce "Obszary"
+        String badge = String.valueOf(areaCount);
+        int bw = textRenderer.getWidth(badge) + 8;
+        rr(dc, px + side - 12 - bw, py + 52 + 4, bw, 14, tab == T_AREAS ? 0xFF3A1B2C : 0xFF23232D);
+        dc.drawTextWithShadow(textRenderer, badge, px + side - 12 - bw + 4, py + 52 + 7, tab == T_AREAS ? C_ACC : C_MUTED);
+
+        dc.drawTextWithShadow(textRenderer, "Fabric 1.21.4", px + 10, py + ph - 22, 0xFF5E5E6C);
 
         // naglowek
-        String head = editing != null && tab == T_AREAS ? "Edycja obszaru" : TAB_NAMES[tab];
-        String desc = editing != null && tab == T_AREAS ? editing.name : TAB_DESC[tab];
+        boolean ed = editing != null && tab == T_AREAS;
+        String head = ed ? "Edycja obszaru" : TAB_NAMES[tab];
+        String desc = ed ? editing.name : TAB_DESC[tab];
         MatrixStack m = dc.getMatrices();
         m.push();
         m.translate(cx, py + 10, 0);
@@ -685,7 +779,8 @@ public class ListScreen extends Screen {
             String k = WaypointTimerMod.selectKey.getBoundKeyLocalizedText().getString();
             switch (tab) {
                 case T_AREAS:
-                    text = k + " = zaznacz róg obszaru · Shift+" + k + " = anuluj";
+                    text = editing != null ? "Puste pole nazwy = nazwa z hologramu"
+                            : k + " = zaznacz róg · Shift+" + k + " = anuluj · " + shown.size() + "/" + areaCount;
                     break;
                 case T_LOOK:
                     text = "Zmiany widać od razu w świecie";
@@ -704,17 +799,24 @@ public class ListScreen extends Screen {
         dc.drawTextWithShadow(textRenderer, textRenderer.trimToWidth(text, cw), cx, fy + 5, col);
     }
 
-    private void drawScrollbar(DrawContext dc) {
+    private int[] thumb() {
         int vh = viewH();
-        if (contentH <= vh) return;
+        int bh = Math.max(16, vh * vh / Math.max(1, contentH));
+        int byy = vTop + (int) ((long) (vh - bh) * scroll / Math.max(1, contentH - vh));
+        return new int[]{byy, bh};
+    }
+
+    private void drawScrollbar(DrawContext dc) {
+        if (contentH <= viewH()) return;
         int tx = px + pw - 8;
         dc.fill(tx, vTop, tx + 3, vBottom, 0xFF262631);
-        int bh = Math.max(16, vh * vh / contentH);
-        int by = vTop + (int) ((long) (vh - bh) * scroll / Math.max(1, contentH - vh));
-        dc.fill(tx, by, tx + 3, by + bh, C_ACC);
+        int[] th = thumb();
+        dc.fill(tx, th[0], tx + 3, th[0] + th[1], sbDrag ? 0xFFFF76AB : C_ACC);
     }
 
     private void drawBtn(DrawContext dc, Btn b, int mx, int my) {
+        int y = by(b);
+        if (b.scroll && (y + b.h < vTop || y > vBottom)) return;
         boolean hov = hitB(b, mx, my);
         b.hv += ((hov ? 1f : 0f) - b.hv) * 0.35f;
         boolean st = b.state != null && b.state.getAsBoolean();
@@ -722,18 +824,18 @@ public class ListScreen extends Screen {
 
         if (b.style == 3) {
             int bg = st ? C_CARD : lerp(0xFF111117, 0xFF1F1F29, b.hv);
-            rr(dc, b.x, b.y, b.w, b.h, bg);
-            if (st) dc.fill(b.x, b.y + 3, b.x + 2, b.y + b.h - 3, C_ACC);
-            dc.fill(b.x + 9, b.y + 9, b.x + 13, b.y + 13, st ? C_ACC : 0xFF4A4A58);
-            dc.drawTextWithShadow(textRenderer, label, b.x + 19, b.y + (b.h - 8) / 2, st ? C_TEXT : C_MUTED);
+            rr(dc, b.x, y, b.w, b.h, bg);
+            if (st) dc.fill(b.x, y + 3, b.x + 2, y + b.h - 3, C_ACC);
+            dc.fill(b.x + 9, y + 9, b.x + 13, y + 13, st ? C_ACC : 0xFF4A4A58);
+            dc.drawTextWithShadow(textRenderer, label, b.x + 19, y + (b.h - 8) / 2, st ? C_TEXT : C_MUTED);
         } else if (b.style == 4) {
             int off = lerp(0xFF3A3A48, 0xFF4C4C5E, b.hv);
-            rr(dc, b.x, b.y, b.w, b.h, st ? lerp(C_ACC, 0xFFFF70A8, b.hv) : off);
+            rr(dc, b.x, y, b.w, b.h, st ? lerp(C_ACC, 0xFFFF70A8, b.hv) : off);
             int kx = st ? b.x + b.w - 12 : b.x + 2;
-            rr(dc, kx, b.y + 2, 10, b.h - 4, 0xFFFFFFFF);
+            rr(dc, kx, y + 2, 10, b.h - 4, 0xFFFFFFFF);
         } else if (b.style == 5) {
-            rr(dc, b.x - 2, b.y - 2, b.w + 4, b.h + 4, st ? C_ACC : lerp(0xFF3A3A48, 0xFF6A6A7C, b.hv));
-            rr(dc, b.x, b.y, b.w, b.h, 0xFF000000 | b.color);
+            rr(dc, b.x - 2, y - 2, b.w + 4, b.h + 4, st ? C_ACC : lerp(0xFF3A3A48, 0xFF6A6A7C, b.hv));
+            rr(dc, b.x, y, b.w, b.h, 0xFF000000 | b.color);
         } else {
             int base, hover;
             int style = st ? 1 : b.style;
@@ -747,20 +849,38 @@ public class ListScreen extends Screen {
                 base = 0xFF2A2A36;
                 hover = 0xFF3B3B4D;
             }
-            rr(dc, b.x, b.y, b.w, b.h, lerp(base, hover, b.hv));
+            rr(dc, b.x, y, b.w, b.h, lerp(base, hover, b.hv));
             int tw = textRenderer.getWidth(label);
-            dc.drawTextWithShadow(textRenderer, label, b.x + (b.w - tw) / 2, b.y + (b.h - 8) / 2, 0xFFFFFFFF);
+            dc.drawTextWithShadow(textRenderer, label, b.x + (b.w - tw) / 2, y + (b.h - 8) / 2, 0xFFFFFFFF);
         }
     }
 
+    private void drawRowBtn(DrawContext dc, int x, int y, int w, int h, String label, int style, boolean hov) {
+        int base, hover;
+        if (style == 1) {
+            base = C_ACC;
+            hover = 0xFFFF76AB;
+        } else if (style == 2) {
+            base = 0xFF6E2535;
+            hover = 0xFFB03A52;
+        } else {
+            base = 0xFF2A2A36;
+            hover = 0xFF3B3B4D;
+        }
+        rr(dc, x, y, w, h, hov ? hover : base);
+        dc.drawTextWithShadow(textRenderer, label, x + (w - textRenderer.getWidth(label)) / 2, y + (h - 8) / 2, 0xFFFFFFFF);
+    }
+
     private void drawSlide(DrawContext dc, Slide s) {
+        int y = sy(s);
+        if (s.scroll && (y + 8 < vTop || y - 8 > vBottom)) return;
         double v = s.get.getAsDouble();
         int fx = s.x + (int) (s.w * v);
-        rr(dc, s.x, s.y - 2, s.w, 4, 0xFF3A3A48);
-        if (fx > s.x) rr(dc, s.x, s.y - 2, fx - s.x, 4, C_ACC);
-        rr(dc, fx - 4, s.y - 6, 8, 12, 0xFFFFFFFF);
+        rr(dc, s.x, y - 2, s.w, 4, 0xFF3A3A48);
+        if (fx > s.x) rr(dc, s.x, y - 2, fx - s.x, 4, C_ACC);
+        rr(dc, fx - 4, y - 6, 8, 12, 0xFFFFFFFF);
         String lab = s.label.get();
-        dc.drawTextWithShadow(textRenderer, lab, s.x - 10 - textRenderer.getWidth(lab), s.y - 4, C_TEXT);
+        dc.drawTextWithShadow(textRenderer, lab, s.x - 10 - textRenderer.getWidth(lab), y - 4, C_TEXT);
     }
 
     private void drawFixed(DrawContext dc) {
@@ -768,10 +888,18 @@ public class ListScreen extends Screen {
             dc.drawTextWithShadow(textRenderer, "Wczytuj do obecnego świata", cx, cy + 29, C_MUTED);
             dc.fill(cx, cy + 48, px + pw - 12, cy + 49, C_LINE);
         }
+        if (tab == T_AREAS && editing == null) {
+            dc.fill(cx, cy + 22, px + pw - 12, cy + 23, C_LINE);
+        }
     }
 
     private void drawContent(DrawContext dc, int mx, int my) {
-        int cwi = cw - 10;
+        // naglowki sekcji
+        for (SecDef s : secDefs) {
+            int y = Y(s.ly);
+            dc.drawTextWithShadow(textRenderer, s.text, cx, y, C_SEC);
+            dc.fill(cx + textRenderer.getWidth(s.text) + 6, y + 4, cx + cwi, y + 5, C_LINE);
+        }
         // karty z etykietami (suwaki, klawisze)
         for (RowDef r : rowDefs) {
             int y = Y(r.ly);
@@ -790,47 +918,65 @@ public class ListScreen extends Screen {
         switch (tab) {
             case T_AREAS:
                 if (editing != null) drawEdit(dc);
-                else drawAreas(dc);
+                else drawAreas(dc, mx, my);
                 break;
             case T_LOOK:
                 drawLookPreview(dc);
                 break;
+            case T_SET:
+                drawPerf(dc);
+                break;
             case T_CFG:
-                drawConfigs(dc);
+                drawConfigs(dc, mx, my);
                 break;
             case T_KEYS:
-                dc.drawTextWithShadow(textRenderer, "Kliknij pole, potem naciśnij nowy klawisz.", cx, Y(76), C_MUTED);
-                dc.drawTextWithShadow(textRenderer, "Esc = anuluj, Reset = klawisz domyślny.", cx, Y(88), C_MUTED);
+                dc.drawTextWithShadow(textRenderer, "Kliknij pole, potem naciśnij nowy klawisz.", cx, Y(90), C_MUTED);
+                dc.drawTextWithShadow(textRenderer, "Esc = anuluj, Reset = klawisz domyślny.", cx, Y(102), C_MUTED);
                 break;
             default:
                 break;
         }
     }
 
-    private void drawAreas(DrawContext dc) {
+    // --- lista obszarow (wiersze rysowane i obslugiwane bez osobnych kontrolek)
+
+    private int areaBtnAt(double mx, double my, int row) {
+        int y = Y(row * ROW_STEP);
+        int xr = cx + cwi - 6;
+        if (in(mx, my, xr - 20, y + 8, 20, 20)) return 1;
+        if (in(mx, my, xr - 70, y + 8, 46, 20)) return 2;
+        if (in(mx, my, xr - 118, y + 8, 44, 20)) return 3;
+        return 0;
+    }
+
+    private void drawAreas(DrawContext dc, int mx, int my) {
         long now = System.currentTimeMillis();
-        int cwi = cw - 10;
 
         if (shown.isEmpty()) {
             String k = WaypointTimerMod.selectKey.getBoundKeyLocalizedText().getString();
-            dc.drawCenteredTextWithShadow(textRenderer, Text.literal("Brak obszarów"), cx + cwi / 2, vTop + 44, C_TEXT);
-            dc.drawCenteredTextWithShadow(textRenderer, Text.literal("Celuj w róg generatora i naciśnij " + k),
-                    cx + cwi / 2, vTop + 58, C_MUTED);
-            dc.drawCenteredTextWithShadow(textRenderer, Text.literal("Potem w przeciwny róg i naciśnij " + k + " jeszcze raz"),
-                    cx + cwi / 2, vTop + 70, C_MUTED);
+            if (areaCount == 0) {
+                dc.drawCenteredTextWithShadow(textRenderer, Text.literal("Brak obszarów"), cx + cwi / 2, vTop + 30, C_TEXT);
+                dc.drawCenteredTextWithShadow(textRenderer, Text.literal("Celuj w róg generatora i naciśnij " + k),
+                        cx + cwi / 2, vTop + 44, C_MUTED);
+                dc.drawCenteredTextWithShadow(textRenderer, Text.literal("Potem w przeciwny róg i naciśnij " + k + " jeszcze raz"),
+                        cx + cwi / 2, vTop + 56, C_MUTED);
+            } else {
+                dc.drawCenteredTextWithShadow(textRenderer, Text.literal("Nic nie pasuje do wyszukiwania"), cx + cwi / 2, vTop + 30, C_MUTED);
+            }
             return;
         }
 
+        var player = client.player;
         for (int i = 0; i < shown.size(); i++) {
             Waypoint w = shown.get(i);
-            int y = Y(i * 40);
-            if (y + 36 < vTop || y > vBottom) continue;
+            int y = Y(i * ROW_STEP);
+            if (y + ROW_H < vTop || y > vBottom) continue;
 
-            rr(dc, cx, y, cwi, 36, C_CARD);
-            dc.fill(cx, y + 4, cx + 3, y + 32, 0xFF000000 | w.statusColor());
+            boolean hovRow = in(mx, my, cx, y, cwi, ROW_H) && inView(my);
+            rr(dc, cx, y, cwi, ROW_H, hovRow ? C_CARD_HOV : C_CARD);
+            dc.fill(cx, y + 4, cx + 3, y + ROW_H - 4, 0xFF000000 | w.statusColor());
 
-            int maxW = cwi - 130 - 20;
-            String n = textRenderer.trimToWidth(w.name, maxW);
+            String n = textRenderer.trimToWidth(w.name, cwi - 150);
             Text nameT = Text.literal(n)
                     .setStyle(Style.EMPTY.withColor(TextColor.fromRgb(w.color)).withBold(w.bold));
             dc.drawTextWithShadow(textRenderer, nameT, cx + 12, y + 7, 0xFFFFFFFF);
@@ -844,6 +990,33 @@ public class ListScreen extends Screen {
                 t2.append(Text.literal(w.timerText(now)).formatted(Formatting.YELLOW));
             }
             dc.drawTextWithShadow(textRenderer, t2, cx + 12, y + 21, 0xFFFFFFFF);
+            int tx = cx + 12 + textRenderer.getWidth(t2) + 8;
+
+            // plakietka statusu
+            String chip = w.state == 1 ? "PEŁNY" : (w.state == 2 ? "PUSTY" : "?");
+            int chipCol = w.state == 1 ? 0xFFFF5555 : (w.state == 2 ? 0xFFFFFFFF : 0xFF9A9AA8);
+            int cwid = textRenderer.getWidth(chip) + 8;
+            if (tx + cwid < cx + cwi - 124) {
+                rr(dc, tx, y + 19, cwid, 12, lerp(C_CARD, chipCol, 0.18f));
+                dc.drawTextWithShadow(textRenderer, chip, tx + 4, y + 21, chipCol);
+                tx += cwid + 6;
+            }
+
+            // dystans od gracza
+            if (player != null) {
+                double dx = w.centerX() - player.getX(), dy = w.y2 + 1 - player.getY(), dz = w.centerZ() - player.getZ();
+                String ds = (int) Math.sqrt(dx * dx + dy * dy + dz * dz) + " m";
+                if (tx + textRenderer.getWidth(ds) < cx + cwi - 124) {
+                    dc.drawTextWithShadow(textRenderer, ds, tx, y + 21, C_MUTED);
+                }
+            }
+
+            // przyciski wiersza
+            int xr = cx + cwi - 6;
+            int ab = hovRow ? areaBtnAt(mx, my, i) : 0;
+            drawRowBtn(dc, xr - 20, y + 8, 20, 20, "x", 2, ab == 1);
+            drawRowBtn(dc, xr - 70, y + 8, 46, 20, "Edytuj", 0, ab == 2);
+            drawRowBtn(dc, xr - 118, y + 8, 44, 20, "Bloki", 0, ab == 3);
         }
     }
 
@@ -864,8 +1037,7 @@ public class ListScreen extends Screen {
     }
 
     private void drawLookPreview(DrawContext dc) {
-        int cwi = cw - 10;
-        int y0 = Y(0);
+        int y0 = Y(14);
         long now = System.currentTimeMillis();
 
         rr(dc, cx, y0, cwi, 66, 0xFF0E0E13);
@@ -876,7 +1048,6 @@ public class ListScreen extends Screen {
                 dc.fill(cx + 2 + xx, y0 + 2 + yy, Math.min(cx + 2 + xx + 8, cx + cwi - 2), Math.min(y0 + 2 + yy + 8, y0 + 64), col);
             }
         }
-        dc.drawTextWithShadow(textRenderer, "Podgląd", cx + 6, y0 + 5, C_MUTED);
 
         if (PREVIEW == null) {
             PREVIEW = new Waypoint();
@@ -897,8 +1068,30 @@ public class ListScreen extends Screen {
         m.pop();
     }
 
-    private void drawConfigs(DrawContext dc) {
-        int cwi = cw - 10;
+    private void drawPerf(DrawContext dc) {
+        int y = Y(194);
+        rr(dc, cx, y, cwi, 40, C_CARD);
+        dc.fill(cx, y + 4, cx + 3, y + 36, 0xFF55FF55);
+        String l1 = String.format(Locale.US, "Skan: %.3f ms (co %d tików) · obszarów: %d",
+                Perf.scanMs, WaypointStore.scanTicks, areaCount);
+        String l2 = String.format(Locale.US, "Świat: %.3f ms · napisy: %.3f ms (na klatkę)", Perf.worldMs, Perf.hudMs);
+        dc.drawTextWithShadow(textRenderer, textRenderer.trimToWidth(l1, cwi - 20), cx + 12, y + 8, C_TEXT);
+        dc.drawTextWithShadow(textRenderer, textRenderer.trimToWidth(l2, cwi - 20), cx + 12, y + 22, C_MUTED);
+    }
+
+    // --- lista configow
+
+    private int cfgBtnAt(double mx, double my, int row) {
+        int y = Y(row * ROW_STEP);
+        int xr = cx + cwi - 6;
+        if (in(mx, my, xr - 20, y + 8, 20, 20)) return 1;
+        if (in(mx, my, xr - 74, y + 8, 50, 20)) return 2;
+        if (in(mx, my, xr - 124, y + 8, 46, 20)) return 3;
+        if (in(mx, my, xr - 176, y + 8, 48, 20)) return 4;
+        return 0;
+    }
+
+    private void drawConfigs(DrawContext dc, int mx, int my) {
         if (profiles.isEmpty()) {
             dc.drawCenteredTextWithShadow(textRenderer, Text.literal("Brak zapisanych configów"), cx + cwi / 2, vTop + 30, C_TEXT);
             dc.drawCenteredTextWithShadow(textRenderer, Text.literal("Wpisz nazwę wyżej i kliknij „Zapisz config”"),
@@ -908,14 +1101,49 @@ public class ListScreen extends Screen {
         DateTimeFormatter fmt = DateTimeFormatter.ofPattern("dd.MM HH:mm");
         for (int i = 0; i < profiles.size(); i++) {
             ConfigProfiles.Info in = profiles.get(i);
-            int y = Y(i * 40);
-            if (y + 36 < vTop || y > vBottom) continue;
-            rr(dc, cx, y, cwi, 36, C_CARD);
-            dc.fill(cx, y + 4, cx + 3, y + 32, C_ACC);
+            int y = Y(i * ROW_STEP);
+            if (y + ROW_H < vTop || y > vBottom) continue;
+
+            boolean hovRow = in(mx, my, cx, y, cwi, ROW_H) && inView(my);
+            rr(dc, cx, y, cwi, ROW_H, hovRow ? C_CARD_HOV : C_CARD);
+            dc.fill(cx, y + 4, cx + 3, y + ROW_H - 4, C_ACC);
             dc.drawTextWithShadow(textRenderer, textRenderer.trimToWidth(in.name, cwi - 200), cx + 12, y + 7, C_TEXT);
             String when = LocalDateTime.ofInstant(Instant.ofEpochMilli(in.modified), ZoneId.systemDefault()).format(fmt);
             dc.drawTextWithShadow(textRenderer, in.areas + " obsz. · " + when, cx + 12, y + 21, C_MUTED);
+
+            int xr = cx + cwi - 6;
+            int ab = hovRow ? cfgBtnAt(mx, my, i) : 0;
+            drawRowBtn(dc, xr - 20, y + 8, 20, 20, in.name.equals(confirmDelete) ? "?" : "x", 2, ab == 1);
+            drawRowBtn(dc, xr - 74, y + 8, 50, 20, "Nadpisz", 0, ab == 2);
+            drawRowBtn(dc, xr - 124, y + 8, 46, 20, "Dołącz", 0, ab == 3);
+            drawRowBtn(dc, xr - 176, y + 8, 48, 20, "Wczytaj", 1, ab == 4);
         }
+    }
+
+    private String rowTip(double mx, double my) {
+        if (!inView(my) || mx < cx || mx > cx + cwi) return null;
+        double rel = my - (vTop - scroll);
+        if (rel < 0) return null;
+        int row = (int) (rel / ROW_STEP);
+        if (rel - row * ROW_STEP > ROW_H) return null;
+        if (tab == T_AREAS && editing == null && row < shown.size()) {
+            switch (areaBtnAt(mx, my, row)) {
+                case 1: return "Usuń obszar";
+                case 2: return "Nazwa, czas regeneracji i powtarzanie";
+                case 3: return "Zapamiętaj lewitujący blok nad generatorem\n(kliknij, gdy generator jest pełny)";
+                default: return null;
+            }
+        }
+        if (tab == T_CFG && row < profiles.size()) {
+            switch (cfgBtnAt(mx, my, row)) {
+                case 1: return "Usuń config (kliknij dwa razy)";
+                case 2: return "Zapisz obecny stan do tego configu";
+                case 3: return "Dodaje obszary z configu do obecnych\n(ustawienia zostają bez zmian)";
+                case 4: return "Zastępuje obecne obszary i ustawienia\nzawartością tego configu";
+                default: return null;
+            }
+        }
+        return null;
     }
 
     private void drawTooltip(DrawContext dc, int mx, int my) {
@@ -934,9 +1162,12 @@ public class ListScreen extends Screen {
                 }
             }
         }
-        if (tip == null && my >= vTop && my <= vBottom) {
+        if (tip == null) tip = rowTip(mx, my);
+        if (tip == null) {
             for (Tip t : tips) {
-                if (mx >= t.x && mx < t.x + t.w && my >= t.y && my < t.y + t.h) {
+                int y = t.scroll ? Y(t.ly) : t.ly;
+                if (t.scroll && !inView(my)) continue;
+                if (in(mx, my, t.x, y, t.w, t.h)) {
                     tip = t.text;
                     break;
                 }
@@ -965,6 +1196,87 @@ public class ListScreen extends Screen {
 
     // ---------------------------------------------------------------- input
 
+    private boolean handleRowClick(double mx, double my) {
+        if (!inView(my) || mx < cx || mx > cx + cwi) return false;
+        double rel = my - (vTop - scroll);
+        if (rel < 0) return false;
+        int row = (int) (rel / ROW_STEP);
+        if (rel - row * ROW_STEP > ROW_H) return false;
+
+        if (tab == T_AREAS && editing == null && row < shown.size()) {
+            Waypoint w = shown.get(row);
+            switch (areaBtnAt(mx, my, row)) {
+                case 1:
+                    WaypointStore.list.remove(w);
+                    WaypointStore.invalidate();
+                    WaypointStore.save();
+                    areaCount = WaypointStore.current(client).size();
+                    refreshShown();
+                    return true;
+                case 2:
+                    editing = w;
+                    editRepeat = w.repeat;
+                    rebuild();
+                    return true;
+                case 3:
+                    GeneratorScanner.recordTypes(client, w);
+                    w.state = 0;
+                    WaypointStore.save();
+                    setStatus("Zapisano znaczniki lewitującego bloku: " + w.types.size());
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
+        if (tab == T_CFG && row < profiles.size()) {
+            ConfigProfiles.Info in = profiles.get(row);
+            switch (cfgBtnAt(mx, my, row)) {
+                case 1:
+                    if (in.name.equals(confirmDelete)) {
+                        ConfigProfiles.delete(in.name);
+                        confirmDelete = null;
+                        profilesDirty = true;
+                        setStatus("Usunięto config „" + in.name + "”");
+                        rebuild();
+                    } else {
+                        confirmDelete = in.name;
+                    }
+                    return true;
+                case 2:
+                    ConfigProfiles.save(in.name);
+                    profilesDirty = true;
+                    setStatus("Nadpisano config „" + in.name + "”");
+                    rebuild();
+                    return true;
+                case 3: {
+                    boolean ok = ConfigProfiles.load(in.name, remap, WaypointStore.currentKey(client), true);
+                    setStatus(ok ? "Dołączono obszary z „" + in.name + "”" : "Nie udało się wczytać");
+                    rebuild();
+                    return true;
+                }
+                case 4: {
+                    boolean ok = ConfigProfiles.load(in.name, remap, WaypointStore.currentKey(client), false);
+                    setStatus(ok ? "Wczytano config „" + in.name + "”" : "Nie udało się wczytać");
+                    rebuild();
+                    return true;
+                }
+                default:
+                    return false;
+            }
+        }
+        return false;
+    }
+
+    private void dragScrollbar(double my) {
+        int vh = viewH();
+        int[] th = thumb();
+        int bh = th[1];
+        int range = Math.max(1, vh - bh);
+        double frac = (my - vTop - bh / 2.0) / range;
+        scroll = (int) Math.round(Math.max(0, Math.min(1, frac)) * Math.max(0, contentH - vh));
+    }
+
     @Override
     public boolean mouseClicked(double mx, double my, int button) {
         if (button == 0) {
@@ -981,6 +1293,12 @@ public class ListScreen extends Screen {
                     return true;
                 }
             }
+            if (contentH > viewH() && in(mx, my, px + pw - 12, vTop, 10, viewH())) {
+                sbDrag = true;
+                dragScrollbar(my);
+                return true;
+            }
+            if (handleRowClick(mx, my)) return true;
         }
         return super.mouseClicked(mx, my, button);
     }
@@ -989,6 +1307,10 @@ public class ListScreen extends Screen {
     public boolean mouseDragged(double mx, double my, int button, double dx, double dy) {
         if (dragging != null) {
             dragging.drag(mx);
+            return true;
+        }
+        if (sbDrag) {
+            dragScrollbar(my);
             return true;
         }
         return super.mouseDragged(mx, my, button, dx, dy);
@@ -1001,21 +1323,27 @@ public class ListScreen extends Screen {
             dragging = null;
             return true;
         }
+        if (sbDrag) {
+            sbDrag = false;
+            return true;
+        }
         return super.mouseReleased(mx, my, button);
     }
 
     @Override
     public boolean mouseScrolled(double mx, double my, double horizontal, double vertical) {
         if (contentH > viewH()) {
-            int ns = scroll - (int) Math.signum(vertical) * 20;
-            ns = Math.max(0, Math.min(contentH - viewH(), ns));
-            if (ns != scroll) {
-                scroll = ns;
-                rebuild();
-            }
+            scroll -= (int) Math.signum(vertical) * 24;
+            clampScroll();
             return true;
         }
         return super.mouseScrolled(mx, my, horizontal, vertical);
+    }
+
+    private boolean fieldFocused() {
+        return (cfgF != null && cfgF.isFocused()) || (searchF != null && searchF.isFocused())
+                || (nameF != null && nameF.isFocused()) || (minF != null && minF.isFocused())
+                || (secF != null && secF.isFocused());
     }
 
     @Override
@@ -1028,6 +1356,25 @@ public class ListScreen extends Screen {
             }
             listening = null;
             return true;
+        }
+        if (!fieldFocused() && contentH > viewH()) {
+            int page = viewH() - 20;
+            if (keyCode == GLFW.GLFW_KEY_PAGE_DOWN) {
+                scroll += page;
+                clampScroll();
+                return true;
+            } else if (keyCode == GLFW.GLFW_KEY_PAGE_UP) {
+                scroll -= page;
+                clampScroll();
+                return true;
+            } else if (keyCode == GLFW.GLFW_KEY_HOME) {
+                scroll = 0;
+                return true;
+            } else if (keyCode == GLFW.GLFW_KEY_END) {
+                scroll = contentH;
+                clampScroll();
+                return true;
+            }
         }
         return super.keyPressed(keyCode, scanCode, modifiers);
     }

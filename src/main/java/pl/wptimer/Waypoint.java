@@ -23,7 +23,8 @@ public class Waypoint {
     public List<String> types = new ArrayList<>();
 
     public transient long liveAt = 0;
-    public transient int absentScans = 0;
+    public transient long absentSince = 0;
+    public transient WaypointHud.Card card;
     private transient Set<String> typeSet;
 
     public Set<String> typeSet() {

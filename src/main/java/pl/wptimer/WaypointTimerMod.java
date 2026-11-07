@@ -1,6 +1,7 @@
 package pl.wptimer;
 
 import net.fabricmc.api.ClientModInitializer;
+import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
@@ -35,11 +36,16 @@ public class WaypointTimerMod implements ClientModInitializer {
             while (listKey.wasPressed()) {
                 if (client.currentScreen == null && client.player != null) client.setScreen(new ListScreen());
             }
+
             tickCount++;
-            if (tickCount % 5 == 0) GeneratorScanner.scanHolograms(client);
-            if (tickCount % 10 == 0) GeneratorScanner.scanFloating(client);
-            WaypointStore.tick(client);
+            if (client.world == null) return;
+            // skan encji rzadko, logika timerow co 4 tiki, zapis tylko gdy trzeba
+            if (tickCount % WaypointStore.scanTicks == 0) GeneratorScanner.scan(client);
+            if (tickCount % 4 == 0) WaypointStore.tick(client);
+            if (tickCount % 20 == 0) WaypointStore.flushIfDue(System.currentTimeMillis());
         });
+
+        ClientLifecycleEvents.CLIENT_STOPPING.register(client -> WaypointStore.shutdown());
 
         WorldRenderEvents.AFTER_TRANSLUCENT.register(WaypointRenderer::render);
         HudRenderCallback.EVENT.register((drawContext, tickCounter) -> WaypointHud.draw(drawContext));
@@ -91,6 +97,7 @@ public class WaypointTimerMod implements ClientModInitializer {
         w.name = "Generator " + (WaypointStore.current(c).size() + 1);
         GeneratorScanner.recordTypes(c, w);
         WaypointStore.list.add(w);
+        WaypointStore.invalidate();
         WaypointStore.save();
 
         if (w.types.isEmpty()) {
